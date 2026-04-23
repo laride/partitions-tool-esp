@@ -146,3 +146,6 @@ vite.config.ts.timestamp-*
 .cursor
 .codex
 .claude
+
+# Husky
+.husky/_

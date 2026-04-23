@@ -1,13 +1,104 @@
 {
-  "name": "esp-partitions-tool",
-  "version": "0.0.1",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "name": "partitions-tool-esp",
+  "version": "0.1.1",
+  "description": "Pure TypeScript library to generate and parse ESP-IDF partition tables, NVS, SPIFFS and FatFS partition images (Node + Browser).",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./partition-table": {
+      "types": "./dist/partition-table/index.d.ts",
+      "import": "./dist/partition-table/index.js",
+      "require": "./dist/partition-table/index.cjs"
+    },
+    "./nvs": {
+      "types": "./dist/nvs/index.d.ts",
+      "import": "./dist/nvs/index.js",
+      "require": "./dist/nvs/index.cjs"
+    },
+    "./spiffs": {
+      "types": "./dist/spiffs/index.d.ts",
+      "import": "./dist/spiffs/index.js",
+      "require": "./dist/spiffs/index.cjs"
+    },
+    "./fatfs": {
+      "types": "./dist/fatfs/index.d.ts",
+      "import": "./dist/fatfs/index.js",
+      "require": "./dist/fatfs/index.cjs"
+    },
+    "./io/node": {
+      "types": "./dist/io/node.d.ts",
+      "import": "./dist/io/node.js",
+      "require": "./dist/io/node.cjs"
+    },
+    "./io/browser": {
+      "types": "./dist/io/browser.d.ts",
+      "import": "./dist/io/browser.js",
+      "require": "./dist/io/browser.cjs"
+    }
   },
-  "keywords": [],
-  "author": "",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "prepare": "husky",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json --noEmit",
+    "lint": "oxlint src tests --vitest-plugin",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "fixtures": "bash scripts/build-fixtures.sh",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "esp32",
+    "esp-idf",
+    "partition-table",
+    "nvs",
+    "spiffs",
+    "fatfs",
+    "flash",
+    "firmware"
+  ],
+  "author": "Laride <node@laride.dev>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/laride/partitions-tool-esp.git"
+  },
+  "homepage": "https://github.com/laride/partitions-tool-esp",
+  "bugs": {
+    "url": "https://github.com/laride/partitions-tool-esp/issues"
+  },
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.33.0"
+  "packageManager": "pnpm@10.33.0",
+  "dependencies": {
+    "@noble/hashes": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "husky": "^9.1.7",
+    "oxfmt": "^0.54.0",
+    "oxlint": "^1.69.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.9"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }

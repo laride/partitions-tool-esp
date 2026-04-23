@@ -1,0 +1,14 @@
+key,type,encoding,value
+storage,namespace,,
+u8_val,data,u8,42
+i8_val,data,i8,-7
+u16_val,data,u16,65535
+i16_val,data,i16,-32000
+u32_val,data,u32,3000000000
+i32_val,data,i32,-2147483648
+u64_val,data,u64,18446744073709551615
+i64_val,data,i64,-9223372036854775808
+greeting,data,string,hello world
+magic,data,hex2bin,deadbeef
+settings,namespace,,
+flag,data,u8,1
