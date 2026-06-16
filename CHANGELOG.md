@@ -3,10 +3,10 @@
 ## [0.1.2] - 2026-06-16
 
 ### Changed
+
 - Upgraded `@noble/hashes` to `2.2.0` in both the main package and the demo.
 - Updated the MD5 import to `@noble/hashes/legacy.js` for compatibility with the new package exports.
 - Raised the main package Node.js engine requirement to `>=20.19.0` to match the upstream dependency requirement.
-
 
 ## [0.1.1] - 2026-06-15
 
