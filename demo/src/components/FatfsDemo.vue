@@ -21,7 +21,7 @@ const uploadedDir = ref<VirtualDirectory | null>(null);
 const fileNames = ref<string[]>([]);
 const error = ref('');
 const generatedBin = ref<Uint8Array | null>(null);
-const parsedFiles = ref<Array<{ path: string; size: number }>>([]);
+const parsedFiles = ref<Array<{ path: string; size: number; content: Uint8Array }>>([]);
 
 const sizeOptions = [
   { label: '128 KB', value: 128 * 1024 },
@@ -105,6 +105,7 @@ function onUploadImage(event: Event) {
       parsedFiles.value = FatFS.flatten(result.root).map((f) => ({
         path: f.path,
         size: f.content.byteLength,
+        content: f.content,
       }));
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
@@ -122,6 +123,14 @@ function download(data: Uint8Array, filename: string) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function downloadParsedFile(file: { path: string; content: Uint8Array }) {
+  download(file.content, toDownloadName(file.path));
+}
+
+function toDownloadName(path: string): string {
+  return path.replace(/[\\/]/g, '__') || 'file.bin';
 }
 
 function formatSize(n: number): string {
@@ -249,6 +258,7 @@ function formatSize(n: number): string {
               <tr>
                 <th>{{ t('fatfs.path') }}</th>
                 <th>{{ t('fatfs.fileSize') }}</th>
+                <th>{{ t('common.download') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -257,6 +267,11 @@ function formatSize(n: number): string {
                   <code>{{ file.path }}</code>
                 </td>
                 <td>{{ formatSize(file.size) }}</td>
+                <td>
+                  <button class="btn outline" @click="downloadParsedFile(file)">
+                    {{ t('common.download') }}
+                  </button>
+                </td>
               </tr>
             </tbody>
           </table>
