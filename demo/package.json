@@ -13,7 +13,7 @@
     "vue-router": "^5.1.0"
   },
   "devDependencies": {
-    "@noble/hashes": "^1.6.1",
+    "@noble/hashes": "^2.2.0",
     "@vitejs/plugin-vue": "^5.2.4",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.5",
