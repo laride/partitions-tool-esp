@@ -209,6 +209,28 @@ const plain = FatFS.removeWearLeveling(image);
 const wrapped = FatFS.wrapWearLeveling(plain, image.byteLength, { mode: 'perf' });
 ```
 
+### LittleFS
+
+```ts
+import { LittleFS, createDir, createFile } from 'partitions-tool-esp';
+
+const image = LittleFS.generate({
+  imageSize: 0x10000,
+  source: createDir('root', [createFile('hello.txt', new TextEncoder().encode('hello\n'))]),
+});
+
+const parsed = LittleFS.parse(image, {
+  onWarning(warning) {
+    console.warn(warning);
+  },
+});
+
+console.log(parsed.files[0]?.path);
+console.log(parsed.warnings);
+```
+
+`LittleFS.parse()` 遇到可能导致结果不一致的结构性损坏时仍会抛错。对于“可疑但可跳过”的情况，例如非法文件名字节或不支持的 file type，则会继续做 best-effort 解码，并把 warning 收集到 `parsed.warnings`，同时在提供 `onWarning` 时即时回调。
+
 ### IO 辅助小工具
 
 本项目提供了一些 Node.js / 浏览器 I/O 辅助工具。
@@ -234,6 +256,7 @@ const dir2 = await fromDirectoryHandle(await showDirectoryPicker());
 | `partitions-tool-esp/nvs`             | 仅 NVS                                                                      |
 | `partitions-tool-esp/spiffs`          | 仅 SPIFFS                                                                   |
 | `partitions-tool-esp/fatfs`           | 仅 FatFS                                                                    |
+| `partitions-tool-esp/littlefs`        | 仅 LittleFS                                                                 |
 | `partitions-tool-esp/io/node`         | Node.js 文件系统桥接                                                        |
 | `partitions-tool-esp/io/browser`      | 浏览器 FileList / File System Access API 桥接                               |
 

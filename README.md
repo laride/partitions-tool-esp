@@ -209,6 +209,28 @@ const plain = FatFS.removeWearLeveling(image);
 const wrapped = FatFS.wrapWearLeveling(plain, image.byteLength, { mode: 'perf' });
 ```
 
+### LittleFS
+
+```ts
+import { LittleFS, createDir, createFile } from 'partitions-tool-esp';
+
+const image = LittleFS.generate({
+  imageSize: 0x10000,
+  source: createDir('root', [createFile('hello.txt', new TextEncoder().encode('hello\n'))]),
+});
+
+const parsed = LittleFS.parse(image, {
+  onWarning(warning) {
+    console.warn(warning);
+  },
+});
+
+console.log(parsed.files[0]?.path);
+console.log(parsed.warnings);
+```
+
+`LittleFS.parse()` still throws on structural corruption that may produce inconsistent results. For best-effort decoding of suspicious-but-skippable entries such as invalid filename bytes or unsupported file types, warnings are collected in `parsed.warnings` and forwarded to `onWarning` when provided.
+
 ### IO Utility Helpers
 
 This project provides some Node.js / browser I/O utility helpers.
@@ -234,6 +256,7 @@ const dir2 = await fromDirectoryHandle(await showDirectoryPicker());
 | `partitions-tool-esp/nvs`             | NVS only                                                                                     |
 | `partitions-tool-esp/spiffs`          | SPIFFS only                                                                                  |
 | `partitions-tool-esp/fatfs`           | FatFS only                                                                                   |
+| `partitions-tool-esp/littlefs`        | LittleFS only                                                                                |
 | `partitions-tool-esp/io/node`         | Node.js filesystem bridge                                                                    |
 | `partitions-tool-esp/io/browser`      | Browser FileList / File System Access API bridge                                             |
 

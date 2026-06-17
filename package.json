@@ -33,6 +33,11 @@
       "import": "./dist/fatfs/index.js",
       "require": "./dist/fatfs/index.cjs"
     },
+    "./littlefs": {
+      "types": "./dist/littlefs/index.d.ts",
+      "import": "./dist/littlefs/index.js",
+      "require": "./dist/littlefs/index.cjs"
+    },
     "./io/node": {
       "types": "./dist/io/node.d.ts",
       "import": "./dist/io/node.js",
@@ -70,6 +75,7 @@
     "nvs",
     "spiffs",
     "fatfs",
+    "littlefs",
     "flash",
     "firmware"
   ],
