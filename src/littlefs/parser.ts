@@ -1,4 +1,9 @@
 import { createDir, createFile, type VirtualDirectory } from '../common/virtual-fs.js';
+import {
+  emitWarning as pushWarning,
+  formatWarning,
+  type ParseWarning,
+} from '../common/diagnostics.js';
 import { ParseError } from '../common/errors.js';
 import {
   type LittleFSBuildInput,
@@ -49,7 +54,7 @@ export interface LittleFSParseResult {
   superblock: LittleFSSuperblock;
   files: LittleFSParsedFile[];
   root: VirtualDirectory;
-  warnings: string[];
+  warnings: ParseWarning[];
 }
 
 export interface LittleFSSuperblock {
@@ -62,7 +67,7 @@ export interface LittleFSSuperblock {
 }
 
 export interface LittleFSParseOptions extends Omit<LittleFSBuildInput, 'imageSize'> {
-  onWarning?: (warning: string) => void;
+  onWarning?: (warning: ParseWarning) => void;
 }
 
 // ── Metadata pair reader ───────────────────────────────────────────────────
@@ -86,24 +91,12 @@ type MoveStateDelta = Uint8Array;
 interface ParseState {
   readonly activeDirectories: Set<string>;
   readonly moveStateXor: MoveStateDelta;
-  readonly warnings: string[];
-  readonly onWarning?: (warning: string) => void;
+  readonly warnings: ParseWarning[];
+  readonly onWarning?: (warning: ParseWarning) => void;
 }
 
 const utf8Decoder = new TextDecoder();
 const utf8DecoderFatal = new TextDecoder('utf-8', { fatal: true });
-
-function emitWarning(
-  state: Pick<ParseState, 'warnings' | 'onWarning'> | undefined,
-  warning: string,
-): void {
-  if (!state) return;
-  if (state.warnings[state.warnings.length - 1] === warning || state.warnings.includes(warning)) {
-    return;
-  }
-  state.warnings.push(warning);
-  state.onWarning?.(warning);
-}
 
 function decodeEntryName(data: Uint8Array, state: ParseState, context: string): string {
   let decoded: string;
@@ -111,17 +104,21 @@ function decodeEntryName(data: Uint8Array, state: ParseState, context: string): 
     decoded = utf8DecoderFatal.decode(data);
   } catch {
     decoded = utf8Decoder.decode(data);
-    emitWarning(
+    pushWarning(
       state,
-      `littlefs: ${context} contains invalid UTF-8 bytes; decoded with replacement characters`,
+      formatWarning(
+        'LittleFS',
+        context,
+        'contains invalid UTF-8 bytes and was decoded with replacement characters',
+      ),
     );
     return decoded;
   }
 
   if (data.some((byte) => byte > 0x7f)) {
-    emitWarning(
+    pushWarning(
       state,
-      `littlefs: ${context} contains non-ASCII bytes; decoded as UTF-8 for best-effort parsing`,
+      formatWarning('LittleFS', context, 'contains non-ASCII bytes and was decoded as UTF-8'),
     );
   }
 
@@ -164,18 +161,26 @@ function canFollowCommit(
   }
 
   if (fcrc.size === 0 || nextOff + fcrc.size > config.blockSize) {
-    emitWarning(
+    pushWarning(
       warningSink,
-      `littlefs: stopping metadata scan at block ${base / config.blockSize} because FCRC size ${fcrc.size} is invalid`,
+      formatWarning(
+        'LittleFS',
+        `metadata block ${base / config.blockSize}`,
+        `stopped commit scan because FCRC size ${fcrc.size} is invalid`,
+      ),
     );
     return false;
   }
 
   const actual = lfsCrc32(image.subarray(base + nextOff, base + nextOff + fcrc.size));
   if (actual !== fcrc.crc) {
-    emitWarning(
+    pushWarning(
       warningSink,
-      `littlefs: stopping metadata scan at block ${base / config.blockSize} because the next commit failed FCRC validation`,
+      formatWarning(
+        'LittleFS',
+        `metadata block ${base / config.blockSize}`,
+        'stopped commit scan because the next commit failed FCRC validation',
+      ),
     );
     return false;
   }
@@ -521,9 +526,13 @@ function extractFiles(
   const files: DirFileInfo[] = [];
   for (const [id, info] of nameMap) {
     if (info.type !== LFS_TYPE_REG && info.type !== LFS_TYPE_DIR) {
-      emitWarning(
+      pushWarning(
         state,
-        `littlefs: skipping entry '${info.name}' with unsupported file type 0x${info.type.toString(16)}`,
+        formatWarning(
+          'LittleFS',
+          `entry '${info.name}'`,
+          `skipped because file type 0x${info.type.toString(16)} is unsupported`,
+        ),
       );
       continue;
     }

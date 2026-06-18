@@ -36,6 +36,7 @@ pnpm add partitions-tool-esp # or use your preferred package manager
 > [!TIP]
 >
 > When the partition size of NVS, SPIFFS, or FATFS cannot accommodate the provided files, the related functions will throw an error.
+> Parser functions for NVS, SPIFFS, FATFS, and LittleFS also support best-effort diagnostics via `warnings` in the parse result and an optional `onWarning` callback.
 
 ### Partition Table
 
@@ -221,7 +222,7 @@ const image = LittleFS.generate({
 
 const parsed = LittleFS.parse(image, {
   onWarning(warning) {
-    console.warn(warning);
+    console.warn(warning.message);
   },
 });
 
@@ -229,7 +230,7 @@ console.log(parsed.files[0]?.path);
 console.log(parsed.warnings);
 ```
 
-`LittleFS.parse()` still throws on structural corruption that may produce inconsistent results. For best-effort decoding of suspicious-but-skippable entries such as invalid filename bytes or unsupported file types, warnings are collected in `parsed.warnings` and forwarded to `onWarning` when provided.
+`LittleFS.parse()` still throws on structural corruption that may produce inconsistent results. For best-effort decoding of suspicious-but-skippable entries such as invalid filename bytes or unsupported file types, structured warnings are collected in `parsed.warnings` and forwarded to `onWarning` when provided.
 
 ### IO Utility Helpers
 

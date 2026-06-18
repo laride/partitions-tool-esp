@@ -1,6 +1,14 @@
 import { createDir, createFile, VirtualDirectory } from '../common/virtual-fs.js';
 import { trimNull, utf8Decode } from '../common/binary.js';
 import {
+  createWarningSink,
+  emitWarning,
+  formatWarning,
+  type ParseWarning,
+  type WarningOptions,
+  type WarningResult,
+} from '../common/diagnostics.js';
+import {
   buildConfig,
   readUint,
   SpiffsBuildConfig,
@@ -24,9 +32,10 @@ export interface SpiffsParseResult {
   files: SpiffsParsedFile[];
   /** Convenience root directory tree. */
   root: VirtualDirectory;
+  warnings: ParseWarning[];
 }
 
-export interface SpiffsParseOptions extends SpiffsBuildInput {
+export interface SpiffsParseOptions extends SpiffsBuildInput, WarningOptions {
   imageSize?: number;
 }
 
@@ -36,6 +45,7 @@ export interface SpiffsParseOptions extends SpiffsBuildInput {
  * `components/spiffs/spiffs_nucleus.h` v0.3.7.
  */
 export function parse(image: Uint8Array, opts: SpiffsParseOptions = {}): SpiffsParseResult {
+  const warningSink = createWarningSink(opts.onWarning);
   const config = buildConfig(opts);
   if (image.length % config.blockSize !== 0) {
     throw new Error(
@@ -75,10 +85,10 @@ export function parse(image: Uint8Array, opts: SpiffsParseOptions = {}): SpiffsP
       const header: PageHeader = { objId, spanIx, flags, absoluteOffset: off };
       if (isIndex) {
         if (flags !== SPIFFS_PH_FLAG_USED_FINAL_INDEX) continue;
-        addPage(indexPages, objId, spanIx, header);
+        addPage(indexPages, objId, spanIx, header, warningSink, 'index');
       } else {
         if (flags !== SPIFFS_PH_FLAG_USED_FINAL) continue;
-        addPage(dataPages, objId, spanIx, header);
+        addPage(dataPages, objId, spanIx, header, warningSink, 'data');
       }
     }
   }
@@ -87,7 +97,13 @@ export function parse(image: Uint8Array, opts: SpiffsParseOptions = {}): SpiffsP
 
   for (const [objId, spans] of indexPages) {
     const headerEntry = spans.get(0);
-    if (!headerEntry) continue;
+    if (!headerEntry) {
+      emitWarning(
+        warningSink,
+        formatWarning('SPIFFS', `object ${objId}`, 'skipped because span 0 index page is missing'),
+      );
+      continue;
+    }
 
     // Read file name and size from the first index page.
     const headView = new DataView(
@@ -106,11 +122,29 @@ export function parse(image: Uint8Array, opts: SpiffsParseOptions = {}): SpiffsP
 
     // Collect data pages in order; rely on data page's own span index.
     const dataSpans = dataPages.get(objId);
-    if (!dataSpans) continue;
+    if (!dataSpans) {
+      emitWarning(
+        warningSink,
+        formatWarning('SPIFFS', `file '${path}'`, 'skipped because no data pages were found'),
+      );
+      continue;
+    }
     const content = new Uint8Array(size);
     let written = 0;
     const sortedSpans = [...dataSpans.keys()].sort((a, b) => a - b);
+    let expectedSpan = 0;
     for (const ix of sortedSpans) {
+      if (ix !== expectedSpan) {
+        emitWarning(
+          warningSink,
+          formatWarning(
+            'SPIFFS',
+            `file '${path}'`,
+            `missing data page span ${expectedSpan}, decoded content may be truncated`,
+          ),
+        );
+        break;
+      }
       const page = dataSpans.get(ix)!;
       const remaining = size - written;
       if (remaining <= 0) break;
@@ -118,13 +152,24 @@ export function parse(image: Uint8Array, opts: SpiffsParseOptions = {}): SpiffsP
       const off = page.absoluteOffset + config.OBJ_DATA_PAGE_HEADER_LEN;
       content.set(image.subarray(off, off + chunkLen), written);
       written += chunkLen;
+      expectedSpan++;
+    }
+    if (written < size) {
+      emitWarning(
+        warningSink,
+        formatWarning(
+          'SPIFFS',
+          `file '${path}'`,
+          `reconstructed ${written} of ${size} bytes, missing pages were filled with zeros`,
+        ),
+      );
     }
     files.push({ path, size, content });
   }
 
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const root = buildTree(files);
-  return { config, files, root };
+  return { config, files, root, warnings: warningSink.warnings };
 }
 
 function addPage<T>(
@@ -132,11 +177,23 @@ function addPage<T>(
   objId: number,
   spanIx: number,
   value: T,
+  warningSink: WarningResult,
+  kind: 'index' | 'data',
 ): void {
   let bucket = store.get(objId);
   if (!bucket) {
     bucket = new Map();
     store.set(objId, bucket);
+  }
+  if (bucket.has(spanIx)) {
+    emitWarning(
+      warningSink,
+      formatWarning(
+        'SPIFFS',
+        `object ${objId} span ${spanIx}`,
+        `duplicate ${kind} page detected, keeping the later page`,
+      ),
+    );
   }
   bucket.set(spanIx, value);
 }

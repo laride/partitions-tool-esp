@@ -1,4 +1,11 @@
 import { crc32Nvs } from '../common/crc32.js';
+import {
+  createWarningSink,
+  emitWarning,
+  formatWarning,
+  type ParseWarning,
+  type WarningOptions,
+} from '../common/diagnostics.js';
 import { NotAlignedError } from '../common/errors.js';
 import { asciiDecode, BinaryReader, trimNull } from '../common/binary.js';
 import {
@@ -57,25 +64,33 @@ export interface NvsPageDump {
 export interface NvsPartitionDump {
   pageSize: number;
   pages: NvsPageDump[];
+  warnings: ParseWarning[];
 }
+
+export interface NvsParseOptions extends WarningOptions {}
 
 /**
  * Parse an NVS partition binary. Matches the layered layout described in
  * `nvs_parser.py` (v2022+): 4KB pages, each with a 32B header, 32B entry-state
  * bitmap, and up to 126 32B entries.
  */
-export function parse(image: Uint8Array): NvsPartitionDump {
+export function parse(image: Uint8Array, opts: NvsParseOptions = {}): NvsPartitionDump {
+  const warningSink = createWarningSink(opts.onWarning);
   if (image.length % PAGE_SIZE !== 0) {
     throw new NotAlignedError(`NVS image length ${image.length} is not aligned to ${PAGE_SIZE}`);
   }
   const pages: NvsPageDump[] = [];
   for (let addr = 0; addr < image.length; addr += PAGE_SIZE) {
-    pages.push(parsePage(image.subarray(addr, addr + PAGE_SIZE), addr));
+    pages.push(parsePage(image.subarray(addr, addr + PAGE_SIZE), addr, warningSink));
   }
-  return { pageSize: PAGE_SIZE, pages };
+  return { pageSize: PAGE_SIZE, pages, warnings: warningSink.warnings };
 }
 
-function parsePage(buf: Uint8Array, startAddress: number): NvsPageDump {
+function parsePage(
+  buf: Uint8Array,
+  startAddress: number,
+  warningSink: ReturnType<typeof createWarningSink>,
+): NvsPageDump {
   const isEmpty = buf.subarray(0, ENTRY_SIZE).every((b) => b === 0xff);
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const statusRaw = view.getUint32(0, true);
@@ -83,6 +98,16 @@ function parsePage(buf: Uint8Array, startAddress: number): NvsPageDump {
   const versionRaw = buf[8]!;
   const storedCrc = view.getUint32(28, true);
   const computedCrc = crc32Nvs(buf.subarray(4, 28)) >>> 0;
+  if (!isEmpty && storedCrc !== computedCrc) {
+    emitWarning(
+      warningSink,
+      formatWarning(
+        'NVS',
+        `page 0x${startAddress.toString(16)}`,
+        `bad header CRC (stored=0x${storedCrc.toString(16)}, computed=0x${computedCrc.toString(16)})`,
+      ),
+    );
+  }
 
   // Entry-state bitmap: 256 bits, 2 bits per slot.
   const bitmap = buf.subarray(HEADER_SIZE, HEADER_SIZE + BITMAP_SIZE);
@@ -103,7 +128,7 @@ function parsePage(buf: Uint8Array, startAddress: number): NvsPageDump {
     let span = rawEntry[2]!;
     if (span === 0xff || span === 0) span = 1;
 
-    const entry = decodeEntry(rawEntry, i, states[i] ?? 'Invalid');
+    const entry = decodeEntry(rawEntry, i, states[i] ?? 'Invalid', startAddress, warningSink);
 
     // Collect children for varlen spans so we can verify data CRC.
     if (span > 1) {
@@ -113,7 +138,9 @@ function parsePage(buf: Uint8Array, startAddress: number): NvsPageDump {
         if (childIdx >= ENTRIES_PER_PAGE) break;
         const off = FIRST_ENTRY_OFFSET + childIdx * ENTRY_SIZE;
         const childRaw = buf.subarray(off, off + ENTRY_SIZE);
-        children.push(decodeEntry(childRaw, childIdx, states[childIdx] ?? 'Invalid'));
+        children.push(
+          decodeEntry(childRaw, childIdx, states[childIdx] ?? 'Invalid', startAddress, warningSink),
+        );
       }
       entry.children = children;
 
@@ -124,6 +151,16 @@ function parsePage(buf: Uint8Array, startAddress: number): NvsPageDump {
         const sliced = merged.subarray(0, entry.data.size);
         const computed = crc32Nvs(sliced) >>> 0;
         entry.dataCrc = { stored: entry.data.crc, computed, ok: computed === entry.data.crc };
+        if (!entry.dataCrc.ok) {
+          emitWarning(
+            warningSink,
+            formatWarning(
+              'NVS',
+              `entry ${entry.key ?? '(unknown)'} at page 0x${startAddress.toString(16)} index ${entry.index}`,
+              'bad data CRC',
+            ),
+          );
+        }
       }
     }
     entries.push(entry);
@@ -145,7 +182,13 @@ function parsePage(buf: Uint8Array, startAddress: number): NvsPageDump {
   };
 }
 
-function decodeEntry(raw: Uint8Array, index: number, state: EntryState): NvsEntryDump {
+function decodeEntry(
+  raw: Uint8Array,
+  index: number,
+  state: EntryState,
+  pageAddress: number,
+  warningSink: ReturnType<typeof createWarningSink>,
+): NvsEntryDump {
   const reader = new BinaryReader(raw);
   const namespace = reader.u8();
   const entryType = reader.u8();
@@ -161,6 +204,26 @@ function decodeEntry(raw: Uint8Array, index: number, state: EntryState): NvsEntr
   const crcComputed = crc32Nvs(crcBuffer) >>> 0;
 
   const key = decodeKey(keyBytes);
+  if (!key && state === 'Written') {
+    emitWarning(
+      warningSink,
+      formatWarning(
+        'NVS',
+        `written entry at page 0x${pageAddress.toString(16)} index ${index}`,
+        'invalid key',
+      ),
+    );
+  }
+  if (state === 'Written' && crcStored !== crcComputed) {
+    emitWarning(
+      warningSink,
+      formatWarning(
+        'NVS',
+        `written entry ${key ?? '(unknown)'} at page 0x${pageAddress.toString(16)} index ${index}`,
+        'bad header CRC',
+      ),
+    );
+  }
 
   return {
     index,

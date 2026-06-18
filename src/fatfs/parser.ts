@@ -1,4 +1,11 @@
 import { asciiDecode } from '../common/binary.js';
+import {
+  createWarningSink,
+  emitWarning,
+  formatWarning,
+  type ParseWarning,
+  type WarningOptions,
+} from '../common/diagnostics.js';
 import { InputError } from '../common/errors.js';
 import { VirtualDirectory, VirtualFile, VirtualNode } from '../common/virtual-fs.js';
 import {
@@ -14,7 +21,7 @@ import {
 import { extractLfnChars, lfnChecksum } from './lfn.js';
 import { removeWearLeveling, WlMode } from './wear-leveling.js';
 
-export interface FatfsParseOptions {
+export interface FatfsParseOptions extends WarningOptions {
   /**
    * Unwrap a wear-leveling wrapped partition before parsing. When `true`, the
    * default `'perf'` mode is assumed; pass the string directly to select
@@ -44,6 +51,7 @@ export interface FatfsBootSector {
 export interface FatfsParseResult {
   boot: FatfsBootSector;
   root: VirtualDirectory;
+  warnings: ParseWarning[];
 }
 
 /**
@@ -53,6 +61,7 @@ export interface FatfsParseResult {
  * skipped (the short entry that terminates the chain is still used).
  */
 export function parse(image: Uint8Array, opts: FatfsParseOptions = {}): FatfsParseResult {
+  const warningSink = createWarningSink(opts.onWarning);
   if (opts.wearLeveling) {
     const mode: WlMode = opts.wearLeveling === true ? 'perf' : opts.wearLeveling;
     image = removeWearLeveling(image, mode);
@@ -76,6 +85,8 @@ export function parse(image: Uint8Array, opts: FatfsParseOptions = {}): FatfsPar
     fatStart,
     dataRegionStart,
     visited: new Set<number>(),
+    warnings: warningSink.warnings,
+    onWarning: warningSink.onWarning,
   };
 
   let rootBytes: Uint8Array;
@@ -88,6 +99,7 @@ export function parse(image: Uint8Array, opts: FatfsParseOptions = {}): FatfsPar
   return {
     boot,
     root: { kind: 'dir', name: '', children: rootChildren },
+    warnings: warningSink.warnings,
   };
 }
 
@@ -98,6 +110,8 @@ interface ParseContext {
   fatStart: number;
   dataRegionStart: number;
   visited: Set<number>;
+  warnings: ParseWarning[];
+  onWarning?: (warning: ParseWarning) => void;
 }
 
 function readBootSector(view: DataView, image: Uint8Array): FatfsBootSector {
@@ -233,6 +247,14 @@ function readDirectory(ctx: ParseContext, dirBytes: Uint8Array, isRoot: boolean)
         lfnChecksumExpected = checksum;
       }
       if (checksum !== lfnChecksumExpected) {
+        emitWarning(
+          ctx,
+          formatWarning(
+            'FatFS',
+            `directory entry offset 0x${i.toString(16)}`,
+            'discarded a broken LFN chain',
+          ),
+        );
         lfnBuf = [];
         lfnChecksumExpected = checksum;
       }
@@ -252,6 +274,15 @@ function readDirectory(ctx: ParseContext, dirBytes: Uint8Array, isRoot: boolean)
     let name = shortName;
     if (lfnBuf.length > 0 && lfnChecksumExpected === lfnChecksum(shortRaw)) {
       name = lfnBuf.join('');
+    } else if (lfnBuf.length > 0) {
+      emitWarning(
+        ctx,
+        formatWarning(
+          'FatFS',
+          `short name '${shortName}'`,
+          'used because the preceding LFN chain checksum did not match',
+        ),
+      );
     }
     lfnBuf = [];
     lfnChecksumExpected = -1;

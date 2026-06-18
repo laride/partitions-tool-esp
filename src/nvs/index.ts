@@ -1,6 +1,7 @@
 export { generate, type NvsEntryDef, type NvsGenerateOptions } from './writer.js';
 export {
   parse,
+  type NvsParseOptions,
   type NvsPartitionDump,
   type NvsPageDump,
   type NvsEntryDump,

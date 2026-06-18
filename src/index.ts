@@ -6,3 +6,4 @@ export * as LittleFS from './littlefs/index.js';
 export * from './common/virtual-fs.js';
 export * from './common/errors.js';
 export type { ChipTarget } from './common/types.js';
+export type { ParseWarning } from './common/diagnostics.js';

@@ -36,6 +36,7 @@ pnpm add partitions-tool-esp # 或者使用你喜欢的包管理器
 > [!TIP]
 >
 > 当 NVS, SPIFFS, FATFS 的分区大小无法容纳提供的文件时，相关函数会抛出错误。
+> NVS、SPIFFS、FATFS、LittleFS 的 parser 还支持 best-effort 诊断：解析结果里会返回 `warnings`，也可以通过可选的 `onWarning` 回调即时接收告警。
 
 ### Partition Table
 
@@ -221,7 +222,7 @@ const image = LittleFS.generate({
 
 const parsed = LittleFS.parse(image, {
   onWarning(warning) {
-    console.warn(warning);
+    console.warn(warning.message);
   },
 });
 
@@ -229,7 +230,7 @@ console.log(parsed.files[0]?.path);
 console.log(parsed.warnings);
 ```
 
-`LittleFS.parse()` 遇到可能导致结果不一致的结构性损坏时仍会抛错。对于“可疑但可跳过”的情况，例如非法文件名字节或不支持的 file type，则会继续做 best-effort 解码，并把 warning 收集到 `parsed.warnings`，同时在提供 `onWarning` 时即时回调。
+`LittleFS.parse()` 遇到可能导致结果不一致的结构性损坏时仍会抛错。对于“可疑但可跳过”的情况，例如非法文件名字节或不支持的 file type，则会继续做 best-effort 解码，并把结构化 warning 收集到 `parsed.warnings`，同时在提供 `onWarning` 时即时回调。
 
 ### IO 辅助小工具
 

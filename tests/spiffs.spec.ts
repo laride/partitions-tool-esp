@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDir, createFile } from '../src/common/virtual-fs.js';
-import { generate, parse } from '../src/spiffs/index.js';
+import type { ParseWarning } from '../src/common/diagnostics.js';
+import { generate, parse, buildConfig } from '../src/spiffs/index.js';
+import { SPIFFS_PH_FLAG_USED_FINAL } from '../src/spiffs/config.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, 'fixtures');
@@ -66,6 +68,47 @@ describe('SPIFFS - parse', () => {
     expect(new TextDecoder().decode(byName.get('/greek.txt')!.content)).toBe(
       'alpha\nbeta\ngamma\n',
     );
+  });
+
+  it('logs a warning when a file is missing all data pages', () => {
+    const content = new TextEncoder().encode('hello world\n');
+    const image = generate({
+      imageSize: 65536,
+      source: createDir('root', [createFile('hello.txt', content)]),
+    });
+    const config = buildConfig();
+
+    for (let bix = 0; bix < image.length / config.blockSize; bix++) {
+      const blockOffset = bix * config.blockSize;
+      for (let pix = config.OBJ_LU_PAGES_PER_BLOCK; pix < config.PAGES_PER_BLOCK; pix++) {
+        const off = blockOffset + pix * config.pageSize;
+        const view = new DataView(image.buffer, image.byteOffset + off, config.pageSize);
+        const objIdRaw = view.getUint16(0, true);
+        const flags = view.getUint8(4);
+        const isIndex = (objIdRaw & 0x8000) !== 0;
+        if (
+          objIdRaw !== 0xffff &&
+          objIdRaw !== 0 &&
+          !isIndex &&
+          flags === SPIFFS_PH_FLAG_USED_FINAL
+        ) {
+          view.setUint8(4, 0xff);
+          bix = image.length;
+          break;
+        }
+      }
+    }
+
+    const warnings: ParseWarning[] = [];
+    const parsed = parse(image, {
+      onWarning(warning) {
+        warnings.push(warning);
+      },
+    });
+
+    expect(parsed.files).toEqual([]);
+    expect(parsed.warnings.some((warning) => /no data pages/.test(warning.reason))).toBe(true);
+    expect(warnings).toEqual(parsed.warnings);
   });
 });
 

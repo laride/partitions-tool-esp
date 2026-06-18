@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { ParseError } from '../src/common/errors.js';
 import { createDir, createFile, type VirtualNode } from '../src/common/virtual-fs.js';
 import { generate, parse } from '../src/littlefs/index.js';
+import type { ParseWarning } from '../src/common/diagnostics.js';
 import {
   lfsCrc32,
   LFS_TYPE_CCRC,
@@ -448,7 +449,7 @@ describe('LittleFS - parse', () => {
       fcrcCrc: 0,
     });
 
-    const warnings: string[] = [];
+    const warnings: ParseWarning[] = [];
     const result = parse(image, {
       onWarning(warning) {
         warnings.push(warning);
@@ -457,7 +458,9 @@ describe('LittleFS - parse', () => {
 
     expect(result.files).toHaveLength(1);
     expect(new TextDecoder().decode(result.files[0]!.content)).toBe('new\n');
-    expect(result.warnings.some((warning) => /failed FCRC validation/.test(warning))).toBe(true);
+    expect(result.warnings.some((warning) => /failed FCRC validation/.test(warning.reason))).toBe(
+      true,
+    );
     expect(warnings).toEqual(result.warnings);
   });
 
@@ -528,7 +531,7 @@ describe('LittleFS - parse', () => {
     rootBlock[nameOffset] = 0xff;
     rewriteFirstCommitCrc(rootBlock, 4096);
 
-    const warnings: string[] = [];
+    const warnings: ParseWarning[] = [];
     const result = parse(image, {
       onWarning(warning) {
         warnings.push(warning);
@@ -537,7 +540,9 @@ describe('LittleFS - parse', () => {
 
     expect(result.files).toHaveLength(1);
     expect(result.files[0]!.path).toContain('\ufffd');
-    expect(result.warnings.some((warning) => /invalid UTF-8 bytes/.test(warning))).toBe(true);
+    expect(result.warnings.some((warning) => /invalid UTF-8 bytes/.test(warning.reason))).toBe(
+      true,
+    );
     expect(warnings).toEqual(result.warnings);
   });
 
@@ -554,7 +559,7 @@ describe('LittleFS - parse', () => {
       return (tag & ~(0x7ff << 20)) | (0x07e << 20);
     });
 
-    const warnings: string[] = [];
+    const warnings: ParseWarning[] = [];
     const result = parse(image, {
       onWarning(warning) {
         warnings.push(warning);
@@ -562,7 +567,7 @@ describe('LittleFS - parse', () => {
     });
 
     expect(result.files).toEqual([]);
-    expect(result.warnings.some((warning) => /unsupported file type/.test(warning))).toBe(true);
+    expect(result.warnings.some((warning) => /is unsupported/.test(warning.reason))).toBe(true);
     expect(warnings).toEqual(result.warnings);
   });
 

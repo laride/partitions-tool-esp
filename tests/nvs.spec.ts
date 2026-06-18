@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ParseWarning } from '../src/common/diagnostics.js';
 import { generate, parse, parseCSV, NvsBuilder, fromObject } from '../src/nvs/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -76,6 +77,24 @@ describe('NVS - round-trip parse', () => {
         if (entry.state === 'Written') expect(entry.headerCrc.ok).toBe(true);
       }
     }
+  });
+
+  it('logs a warning when an NVS page header CRC is corrupted', () => {
+    const csv = readFileSync(join(fixtures, 'nvs_basic.csv'), 'utf8');
+    const entries = parseCSV(csv);
+    const produced = generate(entries, { size: 0x4000, version: 2 });
+    produced[28] = 0x00;
+
+    const warnings: ParseWarning[] = [];
+    const dump = parse(produced, {
+      onWarning(warning) {
+        warnings.push(warning);
+      },
+    });
+
+    expect(dump.pages[0]!.header.crc.ok).toBe(false);
+    expect(dump.warnings.some((warning) => /bad header CRC/i.test(warning.reason))).toBe(true);
+    expect(warnings).toEqual(dump.warnings);
   });
 });
 

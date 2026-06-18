@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDir, createFile } from '../src/common/virtual-fs.js';
+import type { ParseWarning } from '../src/common/diagnostics.js';
 import {
   flatten,
   generate,
@@ -156,6 +157,36 @@ describe('FatFS - parse', () => {
       .map((f) => f.path)
       .sort();
     expect(names).toEqual(['ReadMe Here.txt', 'SHORT.TXT']);
+  });
+
+  it('logs a warning and falls back to the short name when an LFN chain is broken', () => {
+    const source = createDir('root', [
+      createFile('ReadMe Here.txt', new TextEncoder().encode('hi\n')),
+    ]);
+    const img = generate({ size: 524288, source, espIdfCompat: false });
+
+    let lfnOffset = -1;
+    for (let i = 0; i + 32 <= img.length; i += 32) {
+      if (img[i + 11] === 0x0f) {
+        lfnOffset = i;
+        break;
+      }
+    }
+    expect(lfnOffset).toBeGreaterThanOrEqual(0);
+    img[lfnOffset + 13] = 0x00;
+
+    const warnings: ParseWarning[] = [];
+    const parsed = parse(img, {
+      onWarning(warning) {
+        warnings.push(warning);
+      },
+    });
+    const names = flatten(parsed.root).map((f) => f.path);
+
+    expect(names).toHaveLength(1);
+    expect(names[0]).not.toBe('ReadMe Here.txt');
+    expect(parsed.warnings.some((warning) => /LFN/.test(warning.reason))).toBe(true);
+    expect(warnings).toEqual(parsed.warnings);
   });
 
   it('round-trips LFN round-trip through generate -> parse', () => {
