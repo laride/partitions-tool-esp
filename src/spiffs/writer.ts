@@ -1,3 +1,4 @@
+import { utf8Encode } from '../common/binary.js';
 import { flattenFiles, VirtualDirectory } from '../common/virtual-fs.js';
 import { buildConfig, SpiffsBuildConfig, SpiffsBuildInput } from './config.js';
 import { DataPage, IndexPage, LookupPage, SpiffsFull, SpiffsPageBase } from './pages.js';
@@ -139,8 +140,20 @@ class SpiffsFS {
   }
 
   createFile(imgPath: string, contents: Uint8Array): void {
-    if (imgPath.length > this.config.objNameLen) {
-      throw new Error(`object name '${imgPath}' too long`);
+    if (this.curObjId > this.config.MAX_OBJ_ID) {
+      throw new Error(
+        `object id space exhausted at file '${imgPath}' (${this.curObjId} > ${this.config.MAX_OBJ_ID})`,
+      );
+    }
+    const nameBytes = utf8Encode(imgPath);
+    if (nameBytes.includes(0x00)) {
+      throw new Error(`object name '${imgPath}' contains NUL byte`);
+    }
+    const nameByteLen = nameBytes.length;
+    if (nameByteLen >= this.config.objNameLen) {
+      throw new Error(
+        `object name '${imgPath}' too long (${nameByteLen} bytes >= ${this.config.objNameLen}, must leave room for null terminator)`,
+      );
     }
     let offset = 0;
     let block: Block;
@@ -220,7 +233,9 @@ export interface SpiffsGenerateOptions extends SpiffsBuildInput {
 
 /**
  * Generate a SPIFFS filesystem image. Mirrors ESP-IDF's
- * `components/spiffs/spiffsgen.py`, including magic values and walk order.
+ * `components/spiffs/spiffsgen.py` layout and magic values.
+ * File emission order follows the supplied VirtualDirectory child order rather
+ * than Python's exact `os.walk` traversal semantics.
  */
 export function generate(opts: SpiffsGenerateOptions): Uint8Array {
   const config = buildConfig(opts);

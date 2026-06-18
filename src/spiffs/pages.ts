@@ -78,7 +78,7 @@ export class LookupPage implements SpiffsPageBase {
 function calcMagic(config: SpiffsBuildConfig, blocksLim: number, bix: number): number {
   let magic = 0x20140529 ^ config.pageSize;
   if (config.useMagicLen) magic = magic ^ (blocksLim - bix);
-  const mask = (2 << (8 * config.objIdLen)) - 1;
+  const mask = (1 << (8 * config.objIdLen)) - 1;
   return magic & mask;
 }
 
@@ -134,14 +134,20 @@ export class IndexPage implements SpiffsPageBase {
 
       const nameBytes = utf8Encode(this.name);
       out.set(nameBytes, offset);
-      const zeroPadLen =
-        config.objNameLen -
-        nameBytes.length +
-        config.metaLen +
-        config.OBJ_INDEX_PAGES_HEADER_LEN_ALIGNED_PAD;
-      // Fill zero-bytes for the padding region. The tail pad (if aligned tables) is zero too.
-      out.fill(0x00, offset + nameBytes.length, offset + nameBytes.length + zeroPadLen);
-      offset += nameBytes.length + zeroPadLen;
+      const namePadLen = config.objNameLen - nameBytes.length;
+      out.fill(0x00, offset + nameBytes.length, offset + nameBytes.length + namePadLen);
+      offset += config.objNameLen;
+
+      // Match the C runtime's default object creation semantics: absent metadata
+      // is stored as all-0xff, while any tail alignment padding remains zeroed.
+      if (config.metaLen > 0) {
+        out.fill(0xff, offset, offset + config.metaLen);
+        offset += config.metaLen;
+      }
+      if (config.OBJ_INDEX_PAGES_HEADER_LEN_ALIGNED_PAD > 0) {
+        out.fill(0x00, offset, offset + config.OBJ_INDEX_PAGES_HEADER_LEN_ALIGNED_PAD);
+        offset += config.OBJ_INDEX_PAGES_HEADER_LEN_ALIGNED_PAD;
+      }
     }
 
     const shift = log2(config.pageSize);
