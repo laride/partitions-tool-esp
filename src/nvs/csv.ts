@@ -5,6 +5,11 @@ import type { NvsEntryDef } from './writer.js';
  * Parse an ESP-IDF NVS CSV (`key,type,encoding,value` header) into a list of
  * logical entries ready for {@link generate}. File-type rows are passed
  * through with `value` as the raw path; callers must pre-load the file bytes.
+ *
+ * Compatibility note: this parser accepts `float` / `double` encodings in
+ * addition to the common ESP-IDF CSV integer forms. This mirrors the runtime
+ * NVS datatype set, even though some ESP-IDF Python helper variants only
+ * document integers, strings, and blobs.
  */
 export function parseCSV(
   csv: string,
@@ -23,6 +28,7 @@ export function parseCSV(
   }
 
   const entries: NvsEntryDef[] = [];
+  let seenNamespace = false;
   for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
     const row = rows[rowIdx]!;
     if (row.length === 0 || (row.length === 1 && row[0]!.trim() === '')) continue;
@@ -30,16 +36,28 @@ export function parseCSV(
     if (row.length < 4) {
       throw new InputError(`CSV row ${rowIdx + 1}: expected 4 columns, got ${row.length}`);
     }
-    const [key, datatype, encoding, value] = row as [string, string, string, string];
+    const [key, datatypeRaw, encodingRaw, value] = row as [string, string, string, string];
+    const datatype = datatypeRaw.trim().toLowerCase();
+    const enc = encodingRaw.trim().toLowerCase();
 
     if (datatype === 'namespace') {
       entries.push({ type: 'namespace', key });
+      seenNamespace = true;
       continue;
     }
-
-    const enc = encoding.toLowerCase();
-    if (['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64'].includes(enc)) {
+    if (!seenNamespace) {
+      throw new InputError(`CSV row ${rowIdx + 1}: first data row must be a namespace entry`);
+    }
+    if (['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'float', 'double'].includes(enc)) {
       entries.push({ type: enc as NvsEntryDef['type'], key, value } as NvsEntryDef);
+      continue;
+    }
+    if (datatype === 'file' && enc === 'string') {
+      entries.push({
+        type: 'string',
+        key,
+        value: decodeTextFile(loadFile(opts, value, rowIdx, key)),
+      });
       continue;
     }
     if (enc === 'string') {
@@ -48,12 +66,12 @@ export function parseCSV(
     }
     if (enc === 'binary') {
       if (datatype === 'file') {
-        if (!opts.fileLoader) {
-          throw new InputError(
-            `CSV row ${rowIdx + 1}: file entry '${key}' requires a fileLoader callback`,
-          );
-        }
-        entries.push({ type: 'binary', key, value: opts.fileLoader(value), encoding: 'raw' });
+        entries.push({
+          type: 'binary',
+          key,
+          value: loadFile(opts, value, rowIdx, key),
+          encoding: 'raw',
+        });
       } else {
         // raw ASCII value interpreted as bytes.
         entries.push({ type: 'binary', key, value, encoding: 'raw' });
@@ -61,16 +79,52 @@ export function parseCSV(
       continue;
     }
     if (enc === 'hex2bin') {
-      entries.push({ type: 'binary', key, value, encoding: 'hex2bin' });
+      if (datatype === 'file') {
+        entries.push({
+          type: 'binary',
+          key,
+          value: decodeTextFile(loadFile(opts, value, rowIdx, key)),
+          encoding: 'hex2bin',
+        });
+      } else {
+        entries.push({ type: 'binary', key, value, encoding: 'hex2bin' });
+      }
       continue;
     }
     if (enc === 'base64') {
-      entries.push({ type: 'binary', key, value, encoding: 'base64' });
+      if (datatype === 'file') {
+        entries.push({
+          type: 'binary',
+          key,
+          value: decodeTextFile(loadFile(opts, value, rowIdx, key)),
+          encoding: 'base64',
+        });
+      } else {
+        entries.push({ type: 'binary', key, value, encoding: 'base64' });
+      }
       continue;
     }
-    throw new InputError(`CSV row ${rowIdx + 1}: unsupported encoding '${encoding}'`);
+    throw new InputError(`CSV row ${rowIdx + 1}: unsupported encoding '${encodingRaw}'`);
   }
   return entries;
+}
+
+function loadFile(
+  opts: { fileLoader?: (path: string) => Uint8Array },
+  path: string,
+  rowIdx: number,
+  key: string,
+): Uint8Array {
+  if (!opts.fileLoader) {
+    throw new InputError(
+      `CSV row ${rowIdx + 1}: file entry '${key}' requires a fileLoader callback`,
+    );
+  }
+  return opts.fileLoader(path);
+}
+
+function decodeTextFile(data: Uint8Array): string {
+  return new TextDecoder().decode(data);
 }
 
 function parseCsvRows(csv: string): string[][] {

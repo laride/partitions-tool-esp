@@ -1,8 +1,10 @@
 import { crc32Nvs } from '../common/crc32.js';
 import { InputError } from '../common/errors.js';
 import { asciiEncode, utf8Encode } from '../common/binary.js';
+import { encryptNvsPartition } from './crypto.js';
 import {
   BITMAP_SIZE,
+  CHUNK_MAX_SIZE,
   CHUNK_ANY,
   ENTRIES_PER_PAGE,
   ENTRY_SIZE,
@@ -21,13 +23,29 @@ import {
 
 export type NvsVersion = typeof VERSION1 | typeof VERSION2;
 
+const INT_RANGES = {
+  u8: { min: 0n, max: 0xffn },
+  i8: { min: -0x80n, max: 0x7fn },
+  u16: { min: 0n, max: 0xffffn },
+  i16: { min: -0x8000n, max: 0x7fffn },
+  u32: { min: 0n, max: 0xffffffffn },
+  i32: { min: -0x80000000n, max: 0x7fffffffn },
+  u64: { min: 0n, max: 0xffffffffffffffffn },
+  i64: { min: -0x8000000000000000n, max: 0x7fffffffffffffffn },
+} as const;
+
 /**
  * Logical NVS entry definition. `namespace` creates a namespace row. All
  * other types carry a key, encoding and value.
  */
 export type NvsEntryDef =
   | { type: 'namespace'; key: string }
-  | { type: PrimitiveType; key: string; value: number | bigint | string }
+  | {
+      type: Exclude<PrimitiveType, 'float' | 'double'>;
+      key: string;
+      value: number | bigint | string;
+    }
+  | { type: 'float' | 'double'; key: string; value: number | string }
   | { type: 'string'; key: string; value: string }
   | {
       type: 'binary';
@@ -39,8 +57,19 @@ export type NvsEntryDef =
 export interface NvsGenerateOptions {
   /** Partition size in bytes. Must be a multiple of 4096 and at least 0x3000. */
   size: number;
-  /** Default v2 (multipage blobs). Passing 1 forces v1 behavior. */
+  /**
+   * NVS page format version. Defaults to **2** (recommended): multipage blobs via
+   * `blob_data` / `blob_index`. Pass `1` only when generating legacy V1 images
+   * (single-page `blob` entries, 1984-byte blob limit — see `MAX_BLOB_SIZE`).
+   */
   version?: 1 | 2;
+  /**
+   * NVS encryption key. When provided, the generated partition image will be
+   * encrypted using AES-256-XTS (matching ESP-IDF's NVS encryption scheme).
+   * Only entry data (offset >= 64 per page) is encrypted; page headers and
+   * entry-state bitmaps remain plaintext.
+   */
+  encryptionKey?: import('./crypto.js').NvsEncryptionKey;
 }
 
 class Page {
@@ -181,7 +210,12 @@ class NvsWriter {
     return idx;
   }
 
-  writePrimitive(key: string, value: bigint, encoding: PrimitiveType, nsIndex: number): void {
+  writePrimitive(
+    key: string,
+    value: bigint | number,
+    encoding: PrimitiveType,
+    nsIndex: number,
+  ): void {
     try {
       this.writePrimitiveOnPage(this.current, key, value, encoding, nsIndex);
     } catch (e) {
@@ -204,7 +238,7 @@ class NvsWriter {
   private writePrimitiveOnPage(
     page: Page,
     key: string,
-    value: bigint,
+    value: bigint | number,
     encoding: PrimitiveType,
     nsIndex: number,
   ): void {
@@ -237,10 +271,16 @@ class NvsWriter {
         view.setInt32(24, Number(value), true);
         break;
       case 'u64':
-        view.setBigUint64(24, BigInt.asUintN(64, value), true);
+        view.setBigUint64(24, BigInt(value), true);
         break;
       case 'i64':
-        view.setBigInt64(24, BigInt.asIntN(64, value), true);
+        view.setBigInt64(24, BigInt(value), true);
+        break;
+      case 'float':
+        view.setFloat32(24, Number(value), true);
+        break;
+      case 'double':
+        view.setFloat64(24, Number(value), true);
         break;
     }
     setEntryCrc(entry);
@@ -256,13 +296,24 @@ class NvsWriter {
   ): void {
     const dataLen = data.length;
 
-    // V2 blob size limit only applies to strings; V1 limit applies to everything.
+    // V2 string limit stays page-local; v2 binary blobs may span pages up to the
+    // same practical limit enforced by the current IDF storage layer.
     const maxBlob = MAX_BLOB_SIZE[this.version as keyof typeof MAX_BLOB_SIZE];
     const blobLimitApplies = this.version === VERSION1 || encoding === 'string';
     if (blobLimitApplies && dataLen > maxBlob) {
       throw new InputError(
         `value for key '${key}' (${dataLen} bytes) exceeds max NVS blob size ${maxBlob}`,
       );
+    }
+    if (this.version === VERSION2 && encoding === 'binary') {
+      const totalPages = this.totalSize / PAGE_SIZE;
+      const maxPages = Math.min(totalPages - 1, (CHUNK_ANY - 1) / 2);
+      const maxMultipageBlobSize = maxPages * CHUNK_MAX_SIZE;
+      if (dataLen > maxMultipageBlobSize) {
+        throw new InputError(
+          `value for key '${key}' (${dataLen} bytes) exceeds max multipage NVS blob size ${maxMultipageBlobSize}`,
+        );
+      }
     }
 
     const rounded = (dataLen + 31) & ~31;
@@ -271,7 +322,7 @@ class NvsWriter {
 
     if (page.entryNum >= ENTRIES_PER_PAGE) throw new PageFull();
     const canSplit = this.version === VERSION2 && encoding === 'binary';
-    if (page.entryNum + totalEntryCount >= ENTRIES_PER_PAGE && !canSplit) {
+    if (page.entryNum + totalEntryCount > ENTRIES_PER_PAGE && !canSplit) {
       throw new PageFull();
     }
 
@@ -324,12 +375,31 @@ class NvsWriter {
     let current = page;
 
     while (true) {
+      const tailroom = (ENTRIES_PER_PAGE - current.entryNum - 1) * ENTRY_SIZE;
+      // Page-skip heuristic for the first blob chunk: NOT present in
+      // esp_idf_nvs_partition_gen/nvs_partition_gen.py (which always uses the
+      // current page tailroom). Matches IDF C++ runtime instead — see
+      // nvs_flash/src/nvs_storage.cpp::Storage::writeMultiPageBlob() around the
+      // `tailroom < Page::CHUNK_MAX_SIZE/10` check. When the active page has
+      // less than ~400 bytes of payload space left, the runtime opens a fresh
+      // page so the first chunk is not squeezed into a tiny tail slot. Layout
+      // may therefore differ byte-for-byte from nvs_partition_gen.py in edge
+      // cases, but the image remains valid for IDF to read.
+      if (
+        chunkCount === 0 &&
+        (tailroom < dataLen || (tailroom === 0 && dataLen === 0)) &&
+        tailroom < Math.floor(CHUNK_MAX_SIZE / 10)
+      ) {
+        this.createPage();
+        current = this.current;
+        continue;
+      }
+
       // Mutate header clone for each chunk.
       const entry = new Uint8Array(ENTRY_SIZE);
       entry.set(header, 0);
       const view = new DataView(entry.buffer);
 
-      const tailroom = (ENTRIES_PER_PAGE - current.entryNum - 1) * ENTRY_SIZE;
       if (tailroom < 0) throw new Error('page overflow');
       const chunkSize = tailroom < remaining ? tailroom : remaining;
       remaining -= chunkSize;
@@ -419,6 +489,12 @@ function setEntryCrc(entry: Uint8Array): void {
  *  - one reserved empty page at the end of the partition
  *  - v2 binary entries are allowed to span pages via BLOB_DATA/BLOB_IDX
  *  - namespaces are deduplicated and auto-assigned indices starting at 1
+ *
+ * Compatibility note: this generator targets static partition-image creation.
+ * It intentionally does not emulate IDF runtime rewrite behavior for blobs,
+ * where `chunkStart` toggles between versioned ranges (`0x00` / `0x80`) during
+ * in-place updates. Fresh images are emitted with `chunkStart = 0`, which is
+ * valid for IDF to read and matches the initial on-flash layout.
  */
 export function generate(entries: NvsEntryDef[], opts: NvsGenerateOptions): Uint8Array {
   const version = opts.version === 1 ? VERSION1 : VERSION2;
@@ -444,7 +520,13 @@ export function generate(entries: NvsEntryDef[], opts: NvsGenerateOptions): Uint
       case 'i32':
       case 'u64':
       case 'i64': {
-        const num = toBigInt(e.value);
+        const num = toBigInt(e.value, e.type, e.key);
+        writer.writePrimitive(e.key, num, e.type, ns);
+        break;
+      }
+      case 'float':
+      case 'double': {
+        const num = toNumber(e.value);
         writer.writePrimitive(e.key, num, e.type, ns);
         break;
       }
@@ -463,19 +545,54 @@ export function generate(entries: NvsEntryDef[], opts: NvsGenerateOptions): Uint
         throw new InputError(`unsupported NVS entry type ${(e as { type: string }).type}`);
     }
   }
-  return writer.finalize();
+  const image = writer.finalize();
+  if (opts.encryptionKey) {
+    return encryptNvsPartition(image, opts.encryptionKey);
+  }
+  return image;
 }
 
-function toBigInt(v: number | bigint | string): bigint {
-  if (typeof v === 'bigint') return v;
-  if (typeof v === 'number') return BigInt(v);
-  // int(x, 0) style.
-  const trimmed = v.trim();
-  if (/^-?0x[0-9a-fA-F]+$/.test(trimmed)) return BigInt(trimmed);
-  if (/^-?0o[0-7]+$/.test(trimmed)) return BigInt(trimmed);
-  if (/^-?0b[01]+$/.test(trimmed)) return BigInt(trimmed);
-  if (/^-?[0-9]+$/.test(trimmed)) return BigInt(trimmed);
-  throw new InputError(`cannot parse integer value '${v}'`);
+function toBigInt(v: number | bigint | string, type: PrimitiveType, key: string): bigint {
+  if (type === 'float' || type === 'double') {
+    throw new Error(`internal: ${type} is not an integer type`);
+  }
+
+  let value: bigint;
+  if (typeof v === 'bigint') {
+    value = v;
+  } else if (typeof v === 'number') {
+    if (!Number.isFinite(v) || !Number.isInteger(v)) {
+      throw new InputError(`value for key '${key}' is not an integer`);
+    }
+    if (!Number.isSafeInteger(v)) {
+      throw new InputError(
+        `value for key '${key}' is outside JavaScript's safe integer range; use bigint or string`,
+      );
+    }
+    value = BigInt(v);
+  } else {
+    // int(x, 0) style.
+    const trimmed = v.trim();
+    if (/^-?0x[0-9a-fA-F]+$/.test(trimmed)) value = BigInt(trimmed);
+    else if (/^-?0o[0-7]+$/.test(trimmed)) value = BigInt(trimmed);
+    else if (/^-?0b[01]+$/.test(trimmed)) value = BigInt(trimmed);
+    else if (/^-?[0-9]+$/.test(trimmed)) value = BigInt(trimmed);
+    else throw new InputError(`cannot parse integer value '${v}'`);
+  }
+
+  const range = INT_RANGES[type];
+  if (value < range.min || value > range.max) {
+    throw new InputError(
+      `value for key '${key}' (${value}) is out of range for NVS type '${type}'`,
+    );
+  }
+  return value;
+}
+
+function toNumber(v: number | string): number {
+  const n = typeof v === 'number' ? v : Number(v.trim());
+  if (!Number.isFinite(n)) throw new InputError(`cannot parse finite numeric value '${v}'`);
+  return n;
 }
 
 function toBinary(value: Uint8Array | string, encoding: 'raw' | 'hex2bin' | 'base64'): Uint8Array {
@@ -488,6 +605,7 @@ function toBinary(value: Uint8Array | string, encoding: 'raw' | 'hex2bin' | 'bas
 function hexDecode(s: string): Uint8Array {
   const str = s.trim();
   if (str.length % 2 !== 0) throw new InputError('hex2bin value has odd length');
+  if (!/^[0-9a-fA-F]*$/.test(str)) throw new InputError('invalid hex character');
   const out = new Uint8Array(str.length / 2);
   for (let i = 0; i < out.length; i++) {
     const byte = Number.parseInt(str.slice(i * 2, i * 2 + 2), 16);

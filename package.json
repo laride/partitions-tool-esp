@@ -91,6 +91,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.2.0"
   },
   "devDependencies": {

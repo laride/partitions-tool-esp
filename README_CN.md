@@ -18,6 +18,7 @@
 - Partition Table `partition_table`
 - NVS `nvs`
   - 明文 NVS v1 / v2
+  - 加密 NVS（AES-256-XTS）
   - multipage blob
 - FAT `data.fat`
   - FAT12 / FAT16 / FAT32
@@ -75,6 +76,8 @@ const csvBin = NVS.generate(
 storage,namespace,,
 greeting,data,string,hello world
 counter,data,u32,42
+ratio,data,float,1.5
+precise,data,double,3.141592653589793
 `),
   { size: 0x6000 },
 );
@@ -85,6 +88,8 @@ const builderBin = NVS.generate(
     .namespace('storage')
     .string('greeting', 'hello world')
     .u32('counter', 42)
+    .float('ratio', 1.5)
+    .double('precise', Math.PI)
     .binary('blob', new Uint8Array([0xde, 0xad, 0xbe, 0xef]))
     .namespace('settings')
     .u8('flag', 1)
@@ -101,6 +106,8 @@ const objectBin = NVS.generate(
       signed: -1, // 推断为 i32
       blob: new Uint8Array([0xde, 0xad]), // 推断为 binary
       flag: { type: 'u8', value: 1 }, // 显式指定宽度
+      ratio: { type: 'float', value: 1.5 },
+      precise: { type: 'double', value: Math.PI },
       hex: { type: 'binary', value: 'deadbeef', encoding: 'hex2bin' },
     },
     settings: {
@@ -117,6 +124,33 @@ for (const page of dump.pages) {
     if (entry.state === 'Written') console.log(entry);
   }
 }
+
+// --- 加密 NVS ---
+// 生成随机加密密钥
+const key = NVS.generateNvsKey();
+
+// 生成加密的 NVS 分区
+const encryptedBin = NVS.generate(
+  NVS.parseCSV(`key,type,encoding,value
+storage,namespace,,
+secret,data,string,top-secret-value
+`),
+  { size: 0x6000, encryptionKey: key },
+);
+
+// 将密钥序列化为 NVS keys 分区格式（用于烧录）
+const keysBin = NVS.serializeNvsKeyPartition(key);
+
+// 解析加密分区（透明解密）
+const decryptedDump = NVS.parse(encryptedBin, { decryptionKey: key });
+
+// 对已有镜像单独加密/解密
+const encrypted = NVS.encryptNvsPartition(csvBin, key);
+const decrypted = NVS.decryptNvsPartition(encrypted, key);
+
+// 从 HMAC 密钥派生（匹配 IDF 的 HMAC 密钥保护方案）
+const hmacKey = new Uint8Array(32); // 你的 eFuse HMAC 密钥
+const derivedKey = NVS.deriveNvsKeyFromHmac(hmacKey);
 ```
 
 结构化对象模式下，未明确指定类型时，库会自动尝试推断数据类型。也可以手动指定。
@@ -130,10 +164,30 @@ for (const page of dump.pages) {
 | `string`                                | `string`                                         |
 | `Uint8Array`                            | `binary`（raw）                                  |
 | `{ type: 'u8'\|'i8'\|...'i64', value }` | 显式整型                                         |
+| `{ type: 'float'\|'double', value }`    | 显式 IEEE-754 浮点型                             |
 | `{ type: 'string', value }`             | 显式字符串                                       |
 | `{ type: 'binary', value, encoding? }`  | `encoding` 可为 `'raw' \| 'hex2bin' \| 'base64'` |
 
-NVS 工具是参考 [`nvs_partition_tool`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/nvs_flash/nvs_partition_tool/) 实现的。
+NVS 加密说明：
+
+- 加密使用 **AES-256-XTS**（IEEE P1619），与 ESP-IDF 的 NVS 加密方案完全一致。仅条目数据（每页偏移 >= 64 处）被加密；页头和条目状态位图保持明文。
+- NVS keys 分区格式为 4096 字节页：32 字节 `eky` + 32 字节 `tky` + 4 字节 CRC32 + 0xFF 填充。
+- `deriveNvsKeyFromHmac()` 匹配 IDF 的 HMAC 密钥保护方案（`CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`）。
+- 加密 NVS 分区**不应**在分区表中标记 flash encryption 的 `encrypted` 标志；NVS 加密是独立于硬件 flash 加密的软件层 XTS 加密。
+
+NVS 兼容性说明：
+
+- CSV 输入额外接受 `float` / `double` encoding，以覆盖 NVS runtime 支持的数值类型。**此处与 IDF 实现存在差异**：IDF 的 Python `nvs_partition_tool` 实现暂不支持 `float` / `double` encoding。
+- 整数 encoding 在写入前会做范围校验。超出目标类型位宽的值会抛出 `InputError`。
+- 对于超过 JavaScript 安全整数范围的整数 encoding，请传入 `bigint` 或字符串字面量，例如 `'0xffffffffffffffff'`，不要使用 `number`。
+- multipage blob 的静态生成始终写出 `chunkStart = 0`。这对 IDF 读取是有效的，但它不模拟 IDF runtime 在更新 blob 时使用 `0x00` / `0x80` 两个版本区间交替写入的行为。
+- `NVS.parse()` 会尽最大可能解析分区内容，部分在 IDF C/C++ 实现中会报错的分区可以在本工具中解出（附带 warnings）。
+- `NVS.generate(..., { size })` 默认使用 version 2（页头 `0xFE`，支持多页 blob）。新项目请始终使用 version 2。仅在必须生成旧版 V1 镜像时传入 `{ version: 1 }`。
+- NVS Version 1 单页 `blob` 类型的 blob 上限为 1984 字节。**此处与 IDF 实现存在差异**：IDF C++ 实现中，NVS Version 1 单页写入上限为 4000 字节，但其配套的 `esp_idf_nvs_partition_gen` 设置有 1984 字节上限。
+- 不支持 `esp_idf_nvs_partition_gen` 中的 `blob_fill(N;0xXX)`、`blob_sz_fill(N;0xXX)` CSV encoding。请自行构造带填充的 blob 字节（例如用 `NvsBuilder.binary()` 或 `{ type: 'binary', value: new Uint8Array(...) }`）。
+- 不支持 `esp_idf_nvs_partition_gen` 的 WiFi 产线侧效应：写入 `sta.ssid` / `sta.pswd` 不会自动追加 `sta.apinfo`、`sta.pmk`、`sta.apsw`；写入 `ap.ssid` / `ap.passwd` / `ap.authmode` 也不会自动计算并写入 `ap.pmk_info`。若工作流需要这些 key，请显式添加。
+
+NVS 工具的实现参考了 [ESP-IDF 的 NVS 实现](https://github.com/espressif/esp-idf/blob/fb14a3e7f45b93cc59e6efaf651013c560ef3549/components/nvs_flash/) （C/C++ 与 Python 实现）。
 
 ### SPIFFS
 
@@ -302,7 +356,7 @@ IDF_PATH=/path/to/esp-idf OUT=tests/fixtures bash scripts/build-fixtures.sh
 
 - FatFS：支持 FAT12 / FAT16 / FAT32、长文件名（LFN）、wear leveling（`perf` / `safe`）。
   ESP-IDF 本身只为 WL 支持 4096B 扇区（sector_size 512 的 WL 路径是 Python 侧特例），本库同样要求 `sectorSize === 4096`。
-- NVS：尚未实现加密 (`encrypted_partition`) 与版本检测补丁。
+- NVS：已支持加密（AES-256-XTS）。版本检测补丁尚未实现。
 
 ## 许可证
 

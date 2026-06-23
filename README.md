@@ -18,6 +18,7 @@ Currently supports generation and parsing of the following partition formats:
 - Partition Table `partition_table`
 - NVS `nvs`
   - Plain-text NVS v1 / v2
+  - Encrypted NVS (AES-256-XTS)
   - multipage blob
 - FAT `data.fat`
   - FAT12 / FAT16 / FAT32
@@ -75,6 +76,8 @@ const csvBin = NVS.generate(
 storage,namespace,,
 greeting,data,string,hello world
 counter,data,u32,42
+ratio,data,float,1.5
+precise,data,double,3.141592653589793
 `),
   { size: 0x6000 },
 );
@@ -85,6 +88,8 @@ const builderBin = NVS.generate(
     .namespace('storage')
     .string('greeting', 'hello world')
     .u32('counter', 42)
+    .float('ratio', 1.5)
+    .double('precise', Math.PI)
     .binary('blob', new Uint8Array([0xde, 0xad, 0xbe, 0xef]))
     .namespace('settings')
     .u8('flag', 1)
@@ -101,6 +106,8 @@ const objectBin = NVS.generate(
       signed: -1, // inferred as i32
       blob: new Uint8Array([0xde, 0xad]), // inferred as binary
       flag: { type: 'u8', value: 1 }, // explicit width
+      ratio: { type: 'float', value: 1.5 },
+      precise: { type: 'double', value: Math.PI },
       hex: { type: 'binary', value: 'deadbeef', encoding: 'hex2bin' },
     },
     settings: {
@@ -117,6 +124,33 @@ for (const page of dump.pages) {
     if (entry.state === 'Written') console.log(entry);
   }
 }
+
+// --- Encrypted NVS ---
+// Generate a random encryption key
+const key = NVS.generateNvsKey();
+
+// Generate an encrypted NVS partition
+const encryptedBin = NVS.generate(
+  NVS.parseCSV(`key,type,encoding,value
+storage,namespace,,
+secret,data,string,top-secret-value
+`),
+  { size: 0x6000, encryptionKey: key },
+);
+
+// Serialize the key to NVS keys partition format (for flashing)
+const keysBin = NVS.serializeNvsKeyPartition(key);
+
+// Parse an encrypted partition (decrypts transparently)
+const decryptedDump = NVS.parse(encryptedBin, { decryptionKey: key });
+
+// Standalone encrypt/decrypt for existing images
+const encrypted = NVS.encryptNvsPartition(csvBin, key);
+const decrypted = NVS.decryptNvsPartition(encrypted, key);
+
+// Derive key from HMAC (matches IDF's HMAC-based key protection scheme)
+const hmacKey = new Uint8Array(32); // your eFuse HMAC key
+const derivedKey = NVS.deriveNvsKeyFromHmac(hmacKey);
 ```
 
 In structured object mode, when a type is not explicitly specified, the library will automatically attempt to infer the data type. You can also specify it manually.
@@ -130,10 +164,30 @@ In structured object mode, when a type is not explicitly specified, the library 
 | `string`                                | `string`                                           |
 | `Uint8Array`                            | `binary` (raw)                                     |
 | `{ type: 'u8'\|'i8'\|...'i64', value }` | explicit integer type                              |
+| `{ type: 'float'\|'double', value }`    | explicit IEEE-754 floating-point type              |
 | `{ type: 'string', value }`             | explicit string                                    |
 | `{ type: 'binary', value, encoding? }`  | `encoding` can be `'raw' \| 'hex2bin' \| 'base64'` |
 
-The NVS tool is implemented based on [`nvs_partition_tool`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/nvs_flash/nvs_partition_tool/).
+NVS encryption notes:
+
+- Encryption uses **AES-256-XTS** (IEEE P1619), identical to ESP-IDF's NVS encryption scheme. Only entry data (offset >= 64 per page) is encrypted; page headers and entry-state bitmaps remain in plaintext.
+- The NVS keys partition format is a 4096-byte page: 32-byte `eky` + 32-byte `tky` + 4-byte CRC32 + 0xFF padding.
+- `deriveNvsKeyFromHmac()` matches the IDF HMAC-based key protection scheme (`CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`).
+- Encrypted NVS partitions should **not** be marked with the flash encryption `encrypted` flag in the partition table; NVS encryption is a software-level XTS layer independent of hardware flash encryption.
+
+NVS compatibility notes:
+
+- CSV input also accepts `float` / `double` encodings to cover numeric types supported by the NVS runtime. **This differs from the IDF implementation**: ESP-IDF's Python `nvs_partition_tool` does not yet support `float` / `double` encodings.
+- Integer encodings are range-checked before writing. Values outside the target type width will throw `InputError`.
+- For integer encodings larger than JavaScript's safe integer range, pass a `bigint` or string literal such as `'0xffffffffffffffff'` instead of a `number`.
+- Static multipage blob generation always writes `chunkStart = 0`. This is valid for IDF to read, but it does not emulate the IDF runtime behavior of alternating between versioned chunk ranges (`0x00` / `0x80`) when updating blobs.
+- `NVS.parse()` parses partition contents to the best of its ability; partitions that would error in the IDF C/C++ implementation can still be decoded by this tool (with warnings).
+- `NVS.generate(..., { size })` defaults to version 2 (page header `0xFE`, multipage blobs). Use version 2 for all new projects. Pass `{ version: 1 }` only when you must produce legacy V1 images.
+- For NVS version 1, single-page `blob` entries are limited to 1984 bytes. **This differs within the IDF toolchain**: the IDF C++ runtime allows up to 4000 bytes per single-page write, while the companion `esp_idf_nvs_partition_gen` enforces a 1984-byte limit.
+- `blob_fill(N;0xXX)` and `blob_sz_fill(N;0xXX)` CSV encodings from `esp_idf_nvs_partition_gen` are **not supported**. Build the padded blob bytes yourself (e.g. with `NvsBuilder.binary()` or `{ type: 'binary', value: new Uint8Array(...) }`).
+- WiFi provisioning side effects in `esp_idf_nvs_partition_gen` are **not supported**: writing `sta.ssid` / `sta.pswd` does not auto-add `sta.apinfo`, `sta.pmk`, or `sta.apsw`, and `ap.ssid` / `ap.passwd` / `ap.authmode` do not auto-compute `ap.pmk_info`. Add those keys explicitly if your workflow needs them.
+
+The NVS tool is implemented with reference to [ESP-IDF's NVS implementation](https://github.com/espressif/esp-idf/blob/fb14a3e7f45b93cc59e6efaf651013c560ef3549/components/nvs_flash/) (C/C++ and Python implementations).
 
 ### SPIFFS
 
@@ -302,7 +356,7 @@ and write the results back to `tests/fixtures/`.
 
 - FatFS: Supports FAT12 / FAT16 / FAT32, long filenames (LFN), wear leveling (`perf` / `safe`).
   ESP-IDF itself only supports 4096B sectors for WL (the 512 sector_size WL path is a Python-side special case), and this library similarly requires `sectorSize === 4096`.
-- NVS: Encryption (`encrypted_partition`) and version detection patches are not yet implemented.
+- NVS: Encryption is supported (AES-256-XTS). Version detection patches are not yet implemented.
 
 ## License
 
