@@ -1,14 +1,21 @@
 import { bytesEqual, concatBytes, filledBytes } from '../common/binary.js';
+import {
+  createWarningSink,
+  emitWarning,
+  formatWarning,
+  type ParseWarning,
+  type WarningOptions,
+} from '../common/diagnostics.js';
 import { InputError, ValidationError } from '../common/errors.js';
 import { md5 } from '../common/md5.js';
 import {
   BOOTLOADER_TYPE,
   DATA_TYPE,
-  DEFAULT_FLASH_SIZE,
   DEFAULT_OFFSET_PART_TABLE,
   getAlignmentOffsetForType,
   getPtypeName,
   getSubtypeName,
+  getSubtypeMap,
   MAX_PARTITION_LENGTH,
   MD5_PARTITION_BEGIN,
   PARTITION_ENTRY_SIZE,
@@ -16,6 +23,7 @@ import {
   PARTITION_TABLE_SIZE,
   PARTITION_TABLE_TYPE,
   parseInteger,
+  type ExtraPartitionSubtypes,
   SUBTYPES,
   TYPES,
 } from './constants.js';
@@ -44,7 +52,7 @@ export interface PartitionEntry {
 }
 
 export interface PartitionTableOptions {
-  /** Flash size in bytes. Defaults to 4 MiB. */
+  /** Flash size in bytes. Leave empty to disable flash size check. */
   flashSize?: number;
   /** Offset of the partition table in flash. Defaults to 0x8000. */
   offsetPartTable?: number;
@@ -56,16 +64,27 @@ export interface PartitionTableOptions {
   recoveryBootloaderOffset?: number;
   /** Secure boot version (not yet applied to alignment; reserved for future use). */
   secure?: 'none' | 'v1' | 'v2';
+  /** Extra subtype names keyed by partition type name (`app`) or raw type number (`0x40`). */
+  extraSubtypes?: ExtraPartitionSubtypes;
 }
 
-const DEFAULT_OPTS: Required<
-  Pick<PartitionTableOptions, 'flashSize' | 'offsetPartTable' | 'md5Sum' | 'secure'>
-> = {
-  flashSize: DEFAULT_FLASH_SIZE,
-  offsetPartTable: DEFAULT_OFFSET_PART_TABLE,
-  md5Sum: true,
-  secure: 'none',
-};
+export interface PartitionTableParseOptions extends PartitionTableOptions, WarningOptions {}
+
+const DEFAULT_OPTS: Required<Pick<PartitionTableOptions, 'offsetPartTable' | 'md5Sum' | 'secure'>> =
+  {
+    offsetPartTable: DEFAULT_OFFSET_PART_TABLE,
+    md5Sum: true,
+    secure: 'none',
+  };
+
+function validatePartitionTableOptions(opts: PartitionTableOptions): void {
+  const offsetPartTable = opts.offsetPartTable ?? DEFAULT_OFFSET_PART_TABLE;
+  if (opts.primaryBootloaderOffset != null && opts.primaryBootloaderOffset >= offsetPartTable) {
+    throw new InputError(
+      `unsupported configuration: primary bootloader offset 0x${opts.primaryBootloaderOffset.toString(16)} must be below partition table offset 0x${offsetPartTable.toString(16)}`,
+    );
+  }
+}
 
 function resolveTypeNumber(type: PartitionEntry['type']): number {
   if (typeof type === 'number') return type;
@@ -73,9 +92,13 @@ function resolveTypeNumber(type: PartitionEntry['type']): number {
   throw new InputError(`unknown partition type '${String(type)}'`);
 }
 
-function resolveSubtype(typeNum: number, subtype: PartitionEntry['subtype']): number {
+function resolveSubtype(
+  typeNum: number,
+  subtype: PartitionEntry['subtype'],
+  extraSubtypes?: ExtraPartitionSubtypes,
+): number {
   if (typeof subtype === 'number') return subtype;
-  const map = SUBTYPES[typeNum] ?? {};
+  const map = getSubtypeMap(typeNum, extraSubtypes);
   if (map[subtype] !== undefined) return map[subtype]!;
   // Try parsing as raw integer literal.
   try {
@@ -85,9 +108,9 @@ function resolveSubtype(typeNum: number, subtype: PartitionEntry['subtype']): nu
   }
 }
 
-function toParsed(p: PartitionEntry): ParsedPartition {
+function toParsed(p: PartitionEntry, extraSubtypes?: ExtraPartitionSubtypes): ParsedPartition {
   const type = resolveTypeNumber(p.type);
-  const subtype = resolveSubtype(type, p.subtype);
+  const subtype = resolveSubtype(type, p.subtype, extraSubtypes);
   if (p.offset === undefined) {
     throw new InputError(`entry '${p.name}' is missing an offset`);
   }
@@ -102,11 +125,11 @@ function toParsed(p: PartitionEntry): ParsedPartition {
   };
 }
 
-function fromParsed(p: ParsedPartition): PartitionEntry {
+function fromParsed(p: ParsedPartition, extraSubtypes?: ExtraPartitionSubtypes): PartitionEntry {
   return {
     name: p.name,
     type: (getPtypeName(p.type) as PartitionTypeName | undefined) ?? p.type,
-    subtype: getSubtypeName(p.type, p.subtype) ?? p.subtype,
+    subtype: getSubtypeName(p.type, p.subtype, extraSubtypes) ?? p.subtype,
     offset: p.offset,
     size: p.size,
     encrypted: p.encrypted,
@@ -117,20 +140,29 @@ function fromParsed(p: ParsedPartition): PartitionEntry {
 export class PartitionTable {
   readonly entries: PartitionEntry[];
   readonly options: PartitionTableOptions;
+  readonly warnings: ParseWarning[];
 
-  constructor(entries: PartitionEntry[] = [], options: PartitionTableOptions = {}) {
+  constructor(
+    entries: PartitionEntry[] = [],
+    options: PartitionTableOptions = {},
+    warnings: ParseWarning[] = [],
+  ) {
     this.entries = entries;
     this.options = options;
+    this.warnings = warnings;
   }
 
   /**
    * Parse a CSV definition, auto-resolving missing offsets via alignment rules.
    */
   static fromCSV(csv: string, opts: PartitionTableOptions = {}): PartitionTable {
+    validatePartitionTableOptions(opts);
     const { offsetPartTable } = { ...DEFAULT_OPTS, ...opts };
     const ctx = {
       offsetPartTable,
       primaryBootloaderOffset: opts.primaryBootloaderOffset ?? null,
+      recoveryBootloaderOffset: opts.recoveryBootloaderOffset ?? null,
+      extraSubtypes: opts.extraSubtypes,
     };
 
     const rows = csv.split(/\r?\n/);
@@ -199,21 +231,34 @@ export class PartitionTable {
       lastEnd = offset + size;
     }
 
-    const table = new PartitionTable(completed.map(fromParsed), opts);
+    const table = new PartitionTable(
+      completed.map((entry) => fromParsed(entry, opts.extraSubtypes)),
+      opts,
+    );
     return table;
   }
 
   /**
    * Parse the 0xC00-byte binary partition table (or any multiple of 32 bytes).
    * The MD5 checksum row is validated if present.
+   *
+   * Compatibility notes:
+   * - Repeated MD5 rows are treated as warnings during parsing so callers can
+   *   inspect malformed tables on a best-effort basis, even though the
+   *   bootloader C verifier rejects them.
+   * - An all-0xFF end marker in the first row is treated as an empty table with
+   *   a warning. The bootloader C verifier rejects this case, while the Python
+   *   parser accepts it as an empty table.
    */
-  static fromBinary(bin: Uint8Array, opts: PartitionTableOptions = {}): PartitionTable {
+  static fromBinary(bin: Uint8Array, opts: PartitionTableParseOptions = {}): PartitionTable {
     const { md5Sum } = { ...DEFAULT_OPTS, ...opts };
     if (bin.length % PARTITION_ENTRY_SIZE !== 0) {
       throw new InputError(
         `partition table length (${bin.length}) must be a multiple of ${PARTITION_ENTRY_SIZE}`,
       );
     }
+    const warningSink = createWarningSink(opts.onWarning);
+    let md5Found = false;
     const md5Buf: Uint8Array[] = [];
     const entries: PartitionEntry[] = [];
     const endMarker = filledBytes(PARTITION_ENTRY_SIZE, 0xff);
@@ -221,9 +266,29 @@ export class PartitionTable {
     for (let o = 0; o < bin.length; o += PARTITION_ENTRY_SIZE) {
       const row = bin.subarray(o, o + PARTITION_ENTRY_SIZE);
       if (bytesEqual(row, endMarker)) {
-        return new PartitionTable(entries, opts);
+        if (o === 0) {
+          emitWarning(
+            warningSink,
+            formatWarning(
+              'PartitionTable',
+              'binary table',
+              'first row is the all-0xFF end marker; treated as an empty table for best-effort parsing',
+            ),
+          );
+        }
+        return new PartitionTable(entries, opts, warningSink.warnings);
       }
       if (md5Sum && bytesEqual(row.subarray(0, 2), MD5_PARTITION_BEGIN.subarray(0, 2))) {
+        if (md5Found) {
+          emitWarning(
+            warningSink,
+            formatWarning(
+              'PartitionTable',
+              `row ${o / PARTITION_ENTRY_SIZE}`,
+              'multiple MD5 checksum rows found; continuing best-effort parsing',
+            ),
+          );
+        }
         const computed = md5(concatBytes(...md5Buf));
         const stored = row.subarray(16, 32);
         if (!bytesEqual(stored, computed)) {
@@ -231,17 +296,39 @@ export class PartitionTable {
             `MD5 checksum mismatch: computed ${hex(computed)}, stored ${hex(stored)}`,
           );
         }
+        md5Found = true;
         continue;
       }
       md5Buf.push(new Uint8Array(row));
-      entries.push(fromParsed(parseEntry(row)));
+      const subject = `row ${o / PARTITION_ENTRY_SIZE}`;
+      const parsed = parseEntry(row, {
+        bestEffort: true,
+        subject,
+        warningSink,
+      });
+      if (
+        opts.flashSize != null &&
+        (parsed.offset > opts.flashSize || parsed.size > opts.flashSize - parsed.offset)
+      ) {
+        emitWarning(
+          warningSink,
+          formatWarning(
+            'PartitionTable',
+            subject,
+            `partition '${parsed.name}' offset 0x${parsed.offset.toString(16)} size 0x${parsed.size.toString(16)} exceeds configured flash size 0x${opts.flashSize.toString(16)} and would be rejected by esp_partition_table_verify()`,
+          ),
+        );
+      }
+      entries.push(fromParsed(parsed, opts.extraSubtypes));
     }
     throw new InputError('Partition table is missing an end-of-table marker');
   }
 
   toBinary(opts: PartitionTableOptions = {}): Uint8Array {
-    const { md5Sum } = { ...DEFAULT_OPTS, ...this.options, ...opts };
-    const parsed = this.entries.map(toParsed);
+    const resolvedOpts = { ...DEFAULT_OPTS, ...this.options, ...opts };
+    const { md5Sum } = resolvedOpts;
+    new PartitionTable(this.entries, resolvedOpts).verify();
+    const parsed = this.entries.map((entry) => toParsed(entry, resolvedOpts.extraSubtypes));
     const rows: Uint8Array[] = parsed.map(encodeEntry);
     let body = concatBytes(...rows);
     if (md5Sum) {
@@ -262,7 +349,9 @@ export class PartitionTable {
 
   toCSV(simple = false): string {
     const header = ['# ESP-IDF Partition Table', '# Name, Type, SubType, Offset, Size, Flags'];
-    const rows = this.entries.map((e) => partitionToCsv(toParsed(e), simple));
+    const rows = this.entries.map((e) =>
+      partitionToCsv(toParsed(e, this.options.extraSubtypes), simple, this.options.extraSubtypes),
+    );
     return [...header, ...rows].join('\n') + '\n';
   }
 
@@ -273,7 +362,12 @@ export class PartitionTable {
         return false;
       if (q.subtype !== undefined) {
         const t = resolveTypeNumber(e.type);
-        if (resolveSubtype(t, e.subtype) !== resolveSubtype(t, q.subtype)) return false;
+        if (
+          resolveSubtype(t, e.subtype, this.options.extraSubtypes) !==
+          resolveSubtype(t, q.subtype, this.options.extraSubtypes)
+        ) {
+          return false;
+        }
       }
       return true;
     });
@@ -285,13 +379,15 @@ export class PartitionTable {
    */
   verify(): void {
     const opts = { ...DEFAULT_OPTS, ...this.options };
+    validatePartitionTableOptions(opts);
     const ctx = {
       offsetPartTable: opts.offsetPartTable,
       primaryBootloaderOffset: this.options.primaryBootloaderOffset ?? null,
+      secure: opts.secure,
     };
 
     // Per-entry validation.
-    for (const e of this.entries) verifyEntry(toParsed(e), ctx);
+    for (const e of this.entries) verifyEntry(toParsed(e, this.options.extraSubtypes), ctx);
 
     // Duplicate names.
     const seen = new Set<string>();
@@ -301,7 +397,9 @@ export class PartitionTable {
     }
 
     // Overlap + below-table checks.
-    const sorted = [...this.entries].map(toParsed).sort((a, b) => a.offset - b.offset);
+    const sorted = [...this.entries]
+      .map((entry) => toParsed(entry, this.options.extraSubtypes))
+      .sort((a, b) => a.offset - b.offset);
     let last: ParsedPartition | null = null;
     for (const p of sorted) {
       const isPrimaryBootloader =
@@ -344,7 +442,7 @@ export class PartitionTable {
     }
 
     // Flash-size fit.
-    if (opts.flashSize && sorted.length > 0) {
+    if (opts.flashSize != null && sorted.length > 0) {
       const last = sorted[sorted.length - 1]!;
       const totalEnd = last.offset + last.size;
       if (totalEnd > opts.flashSize) {

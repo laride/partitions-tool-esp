@@ -53,7 +53,7 @@ phy_init, data, phy,     ,        0x1000,
 factory,  app,  factory, ,        1M,
 `;
 
-const table = PartitionTable.fromCSV(csv, { flashSize: 4 * 1024 * 1024 });
+const table = PartitionTable.fromCSV(csv);
 const bin = table.toBinary(); // Uint8Array, suitable for writing to partitions.bin
 
 const roundtrip = PartitionTable.fromBinary(bin);
@@ -61,7 +61,22 @@ console.log(roundtrip.entries[0].name); // "nvs"
 console.log(roundtrip.toCSV()); // restore CSV
 ```
 
-The Partition Table generation logic is implemented based on [`gen_esp32part.py`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/partition_table/gen_esp32part.py#).
+Partition Table compatibility notes:
+
+- `toBinary()` validates the partition table before encoding.
+- `flashSize` is optional. Provide it only when you want to explicitly check whether the partition table exceeds flash capacity.
+- `fromCSV(csv, { primaryBootloaderOffset, recoveryBootloaderOffset, offsetPartTable })` supports ESP-IDF's special row semantics, such as `bootloader,primary`, `bootloader,recovery`, and `partition_table,primary`.
+- `extraSubtypes` lets you register additional subtype names for CSV parsing, `find()`, binary round-trip, and CSV export. Key it by partition type name like `data` or by raw type number string like `0x40`.
+- The ESP-IDF bootloader C verifier rejects tables with duplicate MD5 checksum rows, whereas this implementation's `fromBinary()` emits warnings and continues parsing when the checksum values match.
+- The ESP-IDF bootloader C verifier rejects the case where the first 32-byte entry is an all-`0xFF` end marker, whereas this implementation's `fromBinary()` returns an empty table with a warning. The Python `gen_esp32part.py` parser also accepts it as an empty table.
+- `secure: 'v1' | 'v2' | 'none'` affects app partition validation. When `secure: 'v1'`, app partition sizes must be aligned to `0x10000` per ESP-IDF secure boot v1 rules.
+- Per ESP-IDF verification rules, `data,ota` (`otadata`) and `data,coredump` partitions cannot be marked `readonly`.
+
+References:
+
+- https://github.com/espressif/esp-idf/blob/fa8039b5cadb6e85dd830ff8c2c4bd73b6538aee/components/partition_table/gen_esp32part.py
+- https://github.com/espressif/esp-idf/blob/fa8039b5cadb6e85dd830ff8c2c4bd73b6538aee/components/bootloader_support/src/flash_partitions.c
+- https://github.com/espressif/esp-idf/blob/fa8039b5cadb6e85dd830ff8c2c4bd73b6538aee/components/bootloader_support/include/esp_flash_partitions.h
 
 ### NVS
 

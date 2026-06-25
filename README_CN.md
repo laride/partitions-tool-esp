@@ -53,7 +53,7 @@ phy_init, data, phy,     ,        0x1000,
 factory,  app,  factory, ,        1M,
 `;
 
-const table = PartitionTable.fromCSV(csv, { flashSize: 4 * 1024 * 1024 });
+const table = PartitionTable.fromCSV(csv);
 const bin = table.toBinary(); // Uint8Array, 适合写入 partitions.bin
 
 const roundtrip = PartitionTable.fromBinary(bin);
@@ -61,7 +61,22 @@ console.log(roundtrip.entries[0].name); // "nvs"
 console.log(roundtrip.toCSV()); // 还原 CSV
 ```
 
-Partition Table 生成逻辑是参考 [`gen_esp32part.py`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/partition_table/gen_esp32part.py#) 实现的。
+Partition Table 兼容性说明：
+
+- `toBinary()` 会在编码前先校验分区表。
+- `flashSize` 是可选项。只有你希望显式检查分区表是否超出 flash 容量时，才需要传入。
+- `fromCSV(csv, { primaryBootloaderOffset, recoveryBootloaderOffset, offsetPartTable })` 支持 ESP-IDF 的特殊行语义，例如 `bootloader,primary`、`bootloader,recovery`、`partition_table,primary`。
+- `extraSubtypes` 允许注册额外的 subtype 名称，且会同时影响 CSV 解析、`find()`、binary round-trip 与 CSV 导出。外层 key 可以写分区类型名如 `data`，也可以写原始类型数字字符串如 `0x40`。
+- ESP-IDF bootloader 的 C 校验器会拒绝存在重复 MD5 校验行的表，而本实现的 `fromBinary()` 会以 warnings 提示并继续解析（如果校验值匹配）。
+- ESP-IDF bootloader 的 C 校验器会拒绝第一条 32 字节记录就是全 `0xFF` 结束标记的情形，而本实现的 `fromBinary()` 会以 warning 的形式返回空表结果。Python `gen_esp32part.py` 也 parser 会把它当作空表接受。
+- `secure: 'v1' | 'v2' | 'none'` 会影响 app 分区校验。当 `secure: 'v1'` 时，因 ESP-IDF 的 secure boot v1 规则，app 分区大小必须按 `0x10000` 对齐。
+- 因 ESP-IDF 的校验规则，`data,ota`（`otadata`）和 `data,coredump` 分区不能标记为 `readonly`。
+
+实现参考：
+
+- https://github.com/espressif/esp-idf/blob/fa8039b5cadb6e85dd830ff8c2c4bd73b6538aee/components/partition_table/gen_esp32part.py
+- https://github.com/espressif/esp-idf/blob/fa8039b5cadb6e85dd830ff8c2c4bd73b6538aee/components/bootloader_support/src/flash_partitions.c
+- https://github.com/espressif/esp-idf/blob/fa8039b5cadb6e85dd830ff8c2c4bd73b6538aee/components/bootloader_support/include/esp_flash_partitions.h
 
 ### NVS
 
