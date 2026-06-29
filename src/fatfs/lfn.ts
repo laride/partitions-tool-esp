@@ -1,4 +1,5 @@
 import { asciiEncode } from '../common/binary.js';
+import { InputError } from '../common/errors.js';
 import { ATTR_LONG_NAME, ENTRY_SIZE, MAX_EXT_SIZE, MAX_NAME_SIZE, PAD_CHAR } from './constants.js';
 
 const CHARS_PER_LFN_ENTRY = 13;
@@ -9,13 +10,15 @@ const LFN_NAME2_OFFSET = 14;
 const LFN_NAME2_CHARS = 6;
 const LFN_NAME3_OFFSET = 28;
 const LFN_NAME3_CHARS = 2;
+const MAX_LFN_COLLISION_ORDER = 127;
 
 /**
- * INVALID characters for a short (8.3) filename in ESP-IDF's dialect.
- * Standard FAT allows a slightly wider set, but matching ESP-IDF keeps
- * the byte-level parity with `fatfsgen.py --long_name_support`.
+ * Invalid characters for a short (8.3) filename in FatFs' DOS/OEM dialect.
+ * Some of them are valid in LFN entries, so they trigger LFN rather than a
+ * hard failure.
  */
-const INVALID_SFN_CHARS = /[.+,;=[\]]/;
+const INVALID_SFN_ASCII = new Set('"*+,./:;<=>?[\\]|');
+const INVALID_LFN_ASCII = new Set('"*/:<>?[\\]|');
 
 /** Return the 8-bit LFN checksum of the 11-byte short name (8+3). */
 export function lfnChecksum(shortName11: Uint8Array): number {
@@ -38,11 +41,25 @@ export function needsLfn(filename: string): boolean {
   const dot = filename.lastIndexOf('.');
   const name = dot < 0 ? filename : filename.slice(0, dot);
   const ext = dot < 0 ? '' : filename.slice(dot + 1);
-  if (INVALID_SFN_CHARS.test(name)) return true;
+  if (!isAscii(filename)) return true;
+  if (hasInvalidShortNameChar(name) || hasInvalidShortNameChar(ext)) return true;
   if (name.length > MAX_NAME_SIZE || ext.length > MAX_EXT_SIZE) return true;
   // Any lowercase content requires LFN under ESP-IDF rules.
   if (filename !== filename.toUpperCase()) return true;
   return false;
+}
+
+export function validateFatfsFilename(filename: string): void {
+  if (filename.length === 0) throw new InputError('FatFS filename must not be empty');
+  if (filename === '.' || filename === '..') {
+    throw new InputError(`FatFS filename '${filename}' is reserved`);
+  }
+  if (filename.endsWith('.')) {
+    throw new InputError(`FatFS filename '${filename}' must not end with a dot`);
+  }
+  if (hasInvalidLongNameChar(filename)) {
+    throw new InputError(`FatFS filename '${filename}' contains a character not accepted by FatFs`);
+  }
 }
 
 export interface ShortAlias {
@@ -54,56 +71,102 @@ export interface ShortAlias {
   order: number;
 }
 
+function buildLfnRecordName(longName: string): string {
+  return longName.length % CHARS_PER_LFN_ENTRY === 0 ? longName : longName + '\0';
+}
+
+function genNumnameSuffix(seq: number, lfn: string): string {
+  if (seq > 5) {
+    let sreg = seq;
+    for (let idx = 0; idx < lfn.length; idx++) {
+      let wc = lfn.charCodeAt(idx);
+      for (let i = 0; i < 16; i++) {
+        sreg = (sreg << 1) + (wc & 1);
+        wc >>>= 1;
+        if (sreg & 0x10000) sreg ^= 0x11021;
+      }
+    }
+    seq = sreg & 0xffff;
+  }
+  return `~${seq.toString(16).toUpperCase()}`;
+}
+
+function shortKey(bytes11: Uint8Array): string {
+  return Array.from(bytes11, (v) => String.fromCharCode(v)).join('');
+}
+
 /**
  * Produce a unique short alias for {@link longName} given the 11-byte short
- * aliases that already exist in the same directory. Matches ESP-IDF's
- * `name[:6] + '~' + chr(order)` scheme when `espIdfCompat` is true.
+ * aliases that already exist in the same directory. Matches current
+ * ESP-IDF/FatFs `gen_numname()` behavior.
  */
-export function buildShortAlias(
-  longName: string,
-  takenPrefixes: Map<string, number>,
-  opts: { espIdfCompat: boolean },
-): ShortAlias {
-  const upper = longName.toUpperCase();
+export function buildShortAlias(longName: string, usedShortNames: Set<string>): ShortAlias {
+  const upper = uppercaseAscii(longName);
   const dot = upper.lastIndexOf('.');
   const name = dot < 0 ? upper : upper.slice(0, dot);
   const ext = dot < 0 ? '' : upper.slice(dot + 1);
-  // Remove chars that are invalid in SFN (dots before the last one, etc.)
-  const sanitized = name.replace(/[.+,;=[\]]/g, '_');
-  const prefixKey = sanitized.slice(0, 6).padEnd(6, ' ');
-  const order = (takenPrefixes.get(prefixKey) ?? 0) + 1;
-  takenPrefixes.set(prefixKey, order);
+  const lfnRecord = buildLfnRecordName(dot < 0 ? upper : `${name}.${ext}`);
+  const sanitized = sanitizeShortPart(name, '_');
+  const shortExt = sanitizeShortPart(ext, '').slice(0, 3);
 
-  const bytes11 = new Uint8Array(11).fill(PAD_CHAR);
-  const shortName = sanitized.slice(0, 6);
-  const shortExt = ext.slice(0, 3);
-  const nameBytes = asciiEncode(shortName);
-  bytes11.set(nameBytes, 0);
-  // 7th byte = '~', 8th byte = order marker.
-  bytes11[6] = 0x7e; // '~'
-  if (opts.espIdfCompat) {
-    // ESP-IDF writes the raw byte chr(order), e.g. 0x01, 0x02...
-    if (order > 0xff) throw new Error('LFN collision order exceeded 255');
-    bytes11[7] = order;
-  } else {
-    // Standard: ASCII digit for small N, otherwise hex digit.
-    const marker = order.toString(10);
-    if (marker.length !== 1) {
-      throw new Error(
-        `LFN short-alias order ${order} requires multi-char tilde handling; not implemented`,
-      );
-    }
-    bytes11[7] = marker.charCodeAt(0);
+  for (let order = 1; order <= MAX_LFN_COLLISION_ORDER; order++) {
+    const suffix = genNumnameSuffix(order, lfnRecord);
+    const shortName = `${sanitized.slice(0, Math.max(0, MAX_NAME_SIZE - suffix.length))}${suffix}`;
+    const bytes11 = new Uint8Array(11).fill(PAD_CHAR);
+    bytes11.set(asciiEncode(shortName), 0);
+    bytes11.set(asciiEncode(shortExt), 8);
+    const key = shortKey(bytes11);
+    if (usedShortNames.has(key)) continue;
+    usedShortNames.add(key);
+
+    const displayName = Array.from(bytes11.subarray(0, 8), (v) => String.fromCharCode(v))
+      .join('')
+      .trimEnd();
+    const displayExt = Array.from(bytes11.subarray(8, 11), (v) => String.fromCharCode(v))
+      .join('')
+      .trimEnd();
+    const display = displayExt ? `${displayName}.${displayExt}` : displayName;
+    return { bytes11, display, order };
   }
-  bytes11.set(asciiEncode(shortExt), 8);
-  const displayName = Array.from(bytes11.subarray(0, 8), (v) => String.fromCharCode(v))
-    .join('')
-    .trimEnd();
-  const displayExt = Array.from(bytes11.subarray(8, 11), (v) => String.fromCharCode(v))
-    .join('')
-    .trimEnd();
-  const display = displayExt ? `${displayName}.${displayExt}` : displayName;
-  return { bytes11, display, order };
+  throw new Error(`LFN collision order exceeded ${MAX_LFN_COLLISION_ORDER} for '${longName}'`);
+}
+
+function isAscii(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 0x7f) return false;
+  }
+  return true;
+}
+
+function hasInvalidShortNameChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x20 || code > 0x7f || INVALID_SFN_ASCII.has(value[i]!)) return true;
+  }
+  return false;
+}
+
+function hasInvalidLongNameChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || INVALID_LFN_ASCII.has(value[i]!)) return true;
+  }
+  return false;
+}
+
+function uppercaseAscii(value: string): string {
+  return value.replace(/[a-z]/g, (ch) => ch.toUpperCase());
+}
+
+function sanitizeShortPart(value: string, fallback: string): string {
+  let out = '';
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    const ch = value[i]!;
+    out += code <= 0x7f && !hasInvalidShortNameChar(ch) ? ch : '_';
+  }
+  out = out.replace(/_+/g, '_');
+  return out.length > 0 ? out : fallback;
 }
 
 /**
@@ -119,7 +182,7 @@ export function buildLfnEntries(
   const checksum = lfnChecksum(shortName11);
   // ESP-IDF adds a single null terminator if len % 13 != 0. Other chars in
   // the tail are filled with 0xFFFF by `split_name_to_lfn_entry_blocks`.
-  const padded = longName.length % CHARS_PER_LFN_ENTRY === 0 ? longName : longName + '\0';
+  const padded = buildLfnRecordName(longName);
   const entriesCount = Math.ceil(padded.length / CHARS_PER_LFN_ENTRY);
   const out: Uint8Array[] = [];
   // Physical order = reverse logical order.
@@ -164,9 +227,10 @@ function writeLfnBlock(
   for (let i = 0; i < chars; i++) {
     if (i < content.length) {
       let code = content.charCodeAt(i);
-      // ESP-IDF lowercases LFN bytes by applying .lower() on the raw UTF-16
-      // bytes; for ASCII this just folds 'A'..'Z' to 'a'..'z'.
-      if (opts.espIdfCompat && code >= 0x41 && code <= 0x5a) code += 0x20;
+      if (opts.espIdfCompat) {
+        const lower = String.fromCharCode(code).toLowerCase();
+        if (lower.length === 1) code = lower.charCodeAt(0);
+      }
       entry[offset + i * 2] = code & 0xff;
       entry[offset + i * 2 + 1] = (code >>> 8) & 0xff;
     } else {

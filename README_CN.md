@@ -243,7 +243,7 @@ const image = FatFS.generate({
     createDir('SUB', [createFile('INNER.TXT', new Uint8Array([1, 2, 3]))]),
   ]),
   // volumeUuid: 0x12345678, // 卷 UUID: 可选，不填写时会自动指定，填写可以得到确定性输出
-  // explicitFatType: 32,    // FAT Typs: 默认由簇数自动选 12/16；传 32 强制 FAT32
+  // explicitFatType: 32,    // FAT Type: 默认由数据簇数自动选 12/16；传 32 请求 FAT32
   // longFilenames: false,   // 长文件名支持: 禁用 LFN 时仅支持 8.3 文件名
   // espIdfCompat: false,    // IDF 风格偏好: 默认 true
 });
@@ -257,16 +257,16 @@ for (const { path, content } of FatFS.flatten(parsed.root)) {
 参数说明:
 
 - `longFilenames` LFN 长文件名支持，默认启用。如禁用，仅支持 [8.3 文件名](https://zh.wikipedia.org/wiki/8.3%E6%96%87%E4%BB%B6%E5%90%8D)，并在遇到超长文件名时报错。
-- `espIdfCompat` IDF 风格偏好，默认启用。IDF 内置的 [`fatfsgen.py`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/fatfs/fatfsgen.py) 在生成 FAT 镜像时有一些偏好，包括 UTF-16 小写字节化、`-N` 短别名等。将 `espIdfCompat` 设为 `true` 可以获得与 IDF `fatfsgen.py` 相近的输出，而设为 `false` 可以得到 `fsck.fat` 偏好的输出。
+- `espIdfCompat` IDF 风格偏好，默认启用。IDF 内置的 [`fatfsgen.py`](https://github.com/espressif/esp-idf/blob/ae860abd4cb852ac985ef800c2973eddbaf78e61/components/fatfs/fatfsgen.py) 在生成 FAT 镜像时有一些与 FatFS 惯例有差异的行为。将 `espIdfCompat` 设为 `true` 可以获得与 IDF `fatfsgen.py` 相近的输出，而设为 `false` 可以得到 `fsck.fat` 偏好的输出。
 
-如需与 `wear_levelling` 组件配合使用，即启用磨损均衡，可额外启用 `wearLeveling` 选项。此时生成的 FATFS 镜像会自动预留 1 个 dummy 扇区 + 2 个 state 扇区 + 1 个 config 扇区（safe 模式再多 2 个 dump 扇区），与 [`wl_fatfsgen.py`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/fatfs/wl_fatfsgen.py) 基本一致：
+如需与 `wear_levelling` 组件配合使用，即启用磨损均衡，可额外启用 `wearLeveling` 选项。此时生成的 FATFS 镜像会自动预留 1 个 dummy 扇区 + 2 个 state 扇区 + 1 个 config 扇区（safe 模式再多 2 个 dump 扇区），与 [`wl_fatfsgen.py`](https://github.com/espressif/esp-idf/blob/ae860abd4cb852ac985ef800c2973eddbaf78e61/components/fatfs/wl_fatfsgen.py) 基本一致：
 
 ```ts
 import { FatFS, createDir, createFile } from 'partitions-tool-esp';
 
 const image = FatFS.generate({
   size: 1024 * 1024,
-  sectorSize: FatFS.WL_SECTOR_SIZE, // WL 要求 4096
+  sectorSize: FatFS.WL_SECTOR_SIZE, // 4096 字节 FAT 扇区
   source: createDir('', [createFile('HELLO.TXT', new TextEncoder().encode('hi\n'))]),
   wearLeveling: true, // 或 { mode: 'safe', deviceId: 0xdeadbeef }
 });
@@ -278,6 +278,17 @@ const parsed = FatFS.parse(image, { wearLeveling: true });
 const plain = FatFS.removeWearLeveling(image);
 const wrapped = FatFS.wrapWearLeveling(plain, image.byteLength, { mode: 'perf' });
 ```
+
+ESP-IDF 的 WL 运行时也支持 512 字节 FAT 扇区。本库现在在启用 `wearLeveling` 时同时支持 `sectorSize: 4096` 和 `sectorSize: 512`；WL 元数据本身仍然使用 4096 字节 flash 扇区，与 ESP-IDF 的运行时布局保持一致。
+
+FatFS 兼容性说明：
+
+- 本库参考 FatFS Spec 支持 FAT32 的生成。ESP-IDF 当前的 Python 镜像生成工具 [`fatfsgen.py`](https://github.com/espressif/esp-idf/blob/ae860abd4cb852ac985ef800c2973eddbaf78e61/components/fatfs/fatfsgen.py) 与 [`wl_fatfsgen.py`](https://github.com/espressif/esp-idf/blob/ae860abd4cb852ac985ef800c2973eddbaf78e61/components/fatfs/wl_fatfsgen.py) 暂时只支持 FAT12 / FAT16。
+- ESP-IDF 当前的 Python 镜像生成工具 [`fatfsgen.py`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/fatfs/fatfsgen.py) 与 [`wl_fatfsgen.py`](https://github.com/espressif/esp-idf/blob/e2face00fa14ae36befbf8a8cc4fcff0117661bd/components/fatfs/wl_fatfsgen.py) 仍然只覆盖 FAT12 / FAT16，因此本库生成的 FAT32 镜像是按 FAT/FatFs 磁盘格式实现兼容，而不是与这些 IDF Python 工具做字节级一致。
+- FAT 类型选择参考 FatFs C 实现。ESP-IDF 的 `fatfsgen.py` 会在计算选用 FAT12/ FAT16 / FAT32 时计入 `FAT[0]` 和 `FAT[1]` 两项，在特定条件下生成与 FatFs C 实现产生差异并导致读取。
+- 对于 FAT12 / FAT16 镜像，`espIdfCompat: true` 会尽量贴近 IDF Python 生成器的行为，包括它的一些 LFN 短别名细节。
+- IDF 的 `fatfsgen.py` 在判断文件名能否用 8.3 短格式存储时，会先将文件名转为大写。例如 `hello.txt` 大写后为 `HELLO.TXT`，符合 8.3 格式，因此 IDF 将其写为一条普通的短目录项，`DIR_NTRes = 0x18`（标记主名和扩展名均为小写），而不会生成 LFN 链。当 `espIdfCompat: true`（默认值）时，本库复现相同的行为：文件名 ASCII 大写后若符合 8.3，则写为短目录项并置 `DIR_NTRes = 0x18`，不生成 LFN 链。当 `espIdfCompat: false` 时，则采用标准行为：文件名中只要含有小写字母就会触发 LFN 条目链。
+- IDF 的 `wl_fatfsgen.py remove_wl()` 存在一个 bug——其使用固定长度的尾部大小，未计入 safe 模式特有的 2 个 dump 扇区，导致返回的镜像多出 8 KiB。`FatFS.removeWearLeveling()` 已正确处理该情况，在 `perf` 和 `safe` 两种模式下均能准确剥除全部 WL 元数据（含 dump 扇区）。
 
 ### LittleFS
 
@@ -366,11 +377,13 @@ IDF_PATH=/path/to/esp-idf OUT=tests/fixtures bash scripts/build-fixtures.sh
 并把结果写回 `tests/fixtures/`。
 
 > FatFS 镜像里的 `BS_VolID`（偏移 39 处 4 字节）是 `fatfsgen.py` 随机生成的；测试用例会先从测试样例中读出该值再作为 `volumeUuid` 传入 `FatFS.generate`，从而做到字节级一致。
+>
+> ESP-IDF 的 Python `wl_fatfsgen.py` 生成 512 字节 FAT 扇区的 WL FatFS 镜像——实际上这也是它唯一支持的 WL 扇区大小（`sector_size != 512` 与 WL 模式同时使用会直接报错退出）。本库针对 512 字节扇区变体的测试不使用 Python golden 文件，因为两个工具默认均使用随机 `deviceId`；测试改为对照 ESP-IDF C 侧 wear levelling 运行时结构做字节布局校验 + round-trip 校验。
 
 ## 当前限制与路线图
 
 - FatFS：支持 FAT12 / FAT16 / FAT32、长文件名（LFN）、wear leveling（`perf` / `safe`）。
-  ESP-IDF 本身只为 WL 支持 4096B 扇区（sector_size 512 的 WL 路径是 Python 侧特例），本库同样要求 `sectorSize === 4096`。
+  ESP-IDF 的 Python FatFS 镜像生成工具目前只覆盖 FAT12 / FAT16，而本库额外实现了 FAT32。WL 镜像生成/解析支持 4096 字节与 512 字节两种 FAT 扇区大小。
 - NVS：已支持加密（AES-256-XTS）。版本检测补丁尚未实现。
 
 ## 许可证
