@@ -41,7 +41,7 @@ const objectInput = ref(`{
 const partitionSize = ref('0x6000');
 const nvsVersion = ref<1 | 2>(2);
 const encryptOutput = ref(false);
-const encryptionKeyHex = ref(bytesToHex(NVS.generateNvsKey()));
+const encryptionKeyHex = ref('');
 const decryptionKeyHex = ref('');
 const error = ref('');
 const generatedBin = ref<Uint8Array | null>(null);
@@ -59,29 +59,37 @@ const parsedPages = ref<
   }>
 >([]);
 
-function currentEncryptionKey(): NVS.NvsEncryptionKey {
-  const key = hexToBytes(encryptionKeyHex.value);
-  if (key.length !== NVS.NVS_XTS_KEY_SIZE) {
+function nvsKeyToHex(key: NVS.NvsEncryptionKey): string {
+  const combined = new Uint8Array(NVS.NVS_XTS_KEY_SIZE);
+  combined.set(key.eky, 0);
+  combined.set(key.tky, NVS.NVS_KEY_SIZE);
+  return bytesToHex(combined);
+}
+
+function hexToNvsKey(hex: string, label: 'encryption' | 'decryption'): NVS.NvsEncryptionKey {
+  const bytes = hexToBytes(hex);
+  if (bytes.length !== NVS.NVS_XTS_KEY_SIZE) {
     throw new Error(
-      `NVS encryption key must be ${NVS.NVS_XTS_KEY_SIZE} bytes (${NVS.NVS_XTS_KEY_SIZE * 2} hex chars)`,
+      `NVS ${label} key must be ${NVS.NVS_XTS_KEY_SIZE} bytes (${NVS.NVS_XTS_KEY_SIZE * 2} hex chars)`,
     );
   }
-  return key as NVS.NvsEncryptionKey;
+  return {
+    eky: bytes.subarray(0, NVS.NVS_KEY_SIZE),
+    tky: bytes.subarray(NVS.NVS_KEY_SIZE, NVS.NVS_XTS_KEY_SIZE),
+  };
+}
+
+function currentEncryptionKey(): NVS.NvsEncryptionKey {
+  return hexToNvsKey(encryptionKeyHex.value, 'encryption');
 }
 
 function parseDecryptionKey(): NVS.NvsEncryptionKey | undefined {
   if (!decryptionKeyHex.value.trim()) return undefined;
-  const key = hexToBytes(decryptionKeyHex.value);
-  if (key.length !== NVS.NVS_XTS_KEY_SIZE) {
-    throw new Error(
-      `NVS decryption key must be ${NVS.NVS_XTS_KEY_SIZE} bytes (${NVS.NVS_XTS_KEY_SIZE * 2} hex chars)`,
-    );
-  }
-  return key as NVS.NvsEncryptionKey;
+  return hexToNvsKey(decryptionKeyHex.value, 'decryption');
 }
 
 function regenerateKey() {
-  encryptionKeyHex.value = bytesToHex(NVS.generateNvsKey());
+  encryptionKeyHex.value = nvsKeyToHex(NVS.generateNvsKey());
 }
 
 function generateBinary() {

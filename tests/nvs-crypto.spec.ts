@@ -104,6 +104,20 @@ describe('NVS Encryption - key length validation', () => {
   });
 });
 
+describe('NVS Encryption - image size validation', () => {
+  it('encryptNvsPartition rejects unaligned image length', () => {
+    const key = generateNvsKey();
+    const image = new Uint8Array(4097).fill(0xff);
+    expect(() => encryptNvsPartition(image, key)).toThrow(/not aligned to 4096/i);
+  });
+
+  it('decryptNvsPartition rejects unaligned image length', () => {
+    const key = generateNvsKey();
+    const image = new Uint8Array(4097).fill(0xff);
+    expect(() => decryptNvsPartition(image, key)).toThrow(/not aligned to 4096/i);
+  });
+});
+
 describe('NVS Encryption - encrypt/decrypt round-trip', () => {
   it('encrypt then decrypt produces original plaintext', () => {
     const csv = readFileSync(join(fixtures, 'nvs_enc_test.csv'), 'utf8');

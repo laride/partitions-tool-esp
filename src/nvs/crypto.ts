@@ -3,6 +3,7 @@ import { randomBytes } from '@noble/ciphers/utils.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { crc32Nvs } from '../common/crc32.js';
+import { NotAlignedError } from '../common/errors.js';
 import { ENTRY_SIZE, FIRST_ENTRY_OFFSET, PAGE_SIZE } from './constants.js';
 
 export const NVS_KEY_SIZE = 32;
@@ -23,6 +24,12 @@ function assertNvsKey(key: NvsEncryptionKey): void {
   }
   if (key.tky.length !== NVS_KEY_SIZE) {
     throw new Error(`NVS encryption key tky must be ${NVS_KEY_SIZE} bytes, got ${key.tky.length}`);
+  }
+}
+
+function assertNvsImageSize(image: Uint8Array): void {
+  if (image.length % PAGE_SIZE !== 0) {
+    throw new NotAlignedError(`NVS image length ${image.length} is not aligned to ${PAGE_SIZE}`);
   }
 }
 
@@ -192,10 +199,11 @@ function makeTweak(relAddr: number): Uint8Array {
  */
 export function encryptNvsPartition(image: Uint8Array, key: NvsEncryptionKey): Uint8Array {
   assertNvsKey(key);
+  assertNvsImageSize(image);
   const dataKeyExp = toUint32Array(unsafe.expandKeyLE(key.eky));
   const tweakKeyExp = toUint32Array(unsafe.expandKeyLE(key.tky));
   const out = new Uint8Array(image);
-  const pageCount = Math.floor(out.length / PAGE_SIZE);
+  const pageCount = out.length / PAGE_SIZE;
 
   for (let p = 0; p < pageCount; p++) {
     const pageBase = p * PAGE_SIZE;
@@ -220,10 +228,11 @@ export function encryptNvsPartition(image: Uint8Array, key: NvsEncryptionKey): U
  */
 export function decryptNvsPartition(image: Uint8Array, key: NvsEncryptionKey): Uint8Array {
   assertNvsKey(key);
+  assertNvsImageSize(image);
   const dataKeyDecExp = toUint32Array(unsafe.expandKeyDecLE(key.eky));
   const tweakKeyExp = toUint32Array(unsafe.expandKeyLE(key.tky));
   const out = new Uint8Array(image);
-  const pageCount = Math.floor(out.length / PAGE_SIZE);
+  const pageCount = out.length / PAGE_SIZE;
 
   for (let p = 0; p < pageCount; p++) {
     const pageBase = p * PAGE_SIZE;
