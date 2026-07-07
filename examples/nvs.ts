@@ -1,7 +1,8 @@
-// Three equivalent ways to build the same NVS partition:
-//   1) CSV (great for reuse of existing ESP-IDF definitions)
+// Build, encrypt, and parse an NVS partition using the current API surface:
+//   1) CSV (great for existing ESP-IDF definitions)
 //   2) NvsBuilder fluent API
 //   3) fromObject() with a plain JS object
+//   4) Optional AES-256-XTS encryption
 //
 // Run: pnpm tsx examples/nvs.ts
 import { writeFile } from 'node:fs/promises';
@@ -15,6 +16,7 @@ async function main(): Promise<void> {
 storage,namespace,,
 greeting,data,string,hello world
 counter,data,u32,42
+ratio,data,float,1.5
 `;
   const csvBin = NVS.generate(NVS.parseCSV(csv), { size });
 
@@ -24,6 +26,7 @@ counter,data,u32,42
       .namespace('storage')
       .string('greeting', 'hello world')
       .u32('counter', 42)
+      .float('ratio', 1.5)
       .build(),
     { size },
   );
@@ -34,13 +37,25 @@ counter,data,u32,42
       storage: {
         greeting: 'hello world',
         counter: 42, // inferred u32 (non-negative integer)
+        blob: { type: 'binary', value: 'deadbeef', encoding: 'hex2bin' },
       },
     }),
     { size },
   );
 
+  const encryptionKey = NVS.generateNvsKey();
+  const encryptedBin = NVS.generate(NVS.parseCSV(csv), {
+    size,
+    encryptionKey,
+  });
+  const keyPartition = NVS.serializeNvsKeyPartition(encryptionKey);
+
   await writeFile('nvs.bin', builderBin);
+  await writeFile('nvs_encrypted.bin', encryptedBin);
+  await writeFile('nvs_keys.bin', keyPartition);
   console.log('wrote nvs.bin (%d bytes)', builderBin.byteLength);
+  console.log('wrote nvs_encrypted.bin (%d bytes)', encryptedBin.byteLength);
+  console.log('wrote nvs_keys.bin (%d bytes)', keyPartition.byteLength);
 
   const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean =>
     a.byteLength === b.byteLength && a.every((v, i) => v === b[i]);
@@ -55,6 +70,9 @@ counter,data,u32,42
       }
     }
   }
+
+  const encryptedDump = NVS.parse(encryptedBin, { decryptionKey: encryptionKey });
+  console.log('encrypted parse warnings:', encryptedDump.warnings.length);
 }
 
 main().catch((err: unknown) => {

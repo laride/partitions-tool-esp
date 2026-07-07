@@ -10,6 +10,7 @@ const navItems = [
   { path: '/nvs', labelKey: 'tabs.nvs' },
   { path: '/spiffs', labelKey: 'tabs.spiffs' },
   { path: '/fatfs', labelKey: 'tabs.fatfs' },
+  { path: '/littlefs', labelKey: 'tabs.littlefs' },
 ] as const;
 </script>
 

@@ -25,6 +25,13 @@
   - SFN(8.3) 或 LFN
   - 磨损均衡
 - SPIFFS `data.spiffs`
+- LittleFS `data.littlefs`
+
+## 在线 Demo
+
+通过浏览器在线体验此包的功能:
+
+- https://laride.github.io/partitions-tool-esp/
 
 ## 安装
 
@@ -297,6 +304,10 @@ import { LittleFS, createDir, createFile } from 'partitions-tool-esp';
 
 const image = LittleFS.generate({
   imageSize: 0x10000,
+  blockSize: 4096,
+  readSize: 16,
+  progSize: 16,
+  inlineMax: 512,
   source: createDir('root', [createFile('hello.txt', new TextEncoder().encode('hello\n'))]),
 });
 

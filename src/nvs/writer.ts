@@ -622,6 +622,10 @@ function base64Decode(s: string): Uint8Array {
     for (let i = 0; i < binStr.length; i++) out[i] = binStr.charCodeAt(i);
     return out;
   }
-  // Node fallback.
-  return new Uint8Array(Buffer.from(s, 'base64'));
+  // Node fallback without a hard type dependency on Buffer.
+  const nodeBuffer = (
+    globalThis as { Buffer?: { from(input: string, encoding: string): Uint8Array } }
+  ).Buffer;
+  if (nodeBuffer) return new Uint8Array(nodeBuffer.from(s, 'base64'));
+  throw new InputError('base64 decoding is not available in this environment');
 }

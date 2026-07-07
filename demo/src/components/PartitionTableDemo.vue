@@ -2,6 +2,8 @@
 import { ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { PartitionTable } from 'partitions-tool-esp/partition-table';
+import WarningsPanel from './WarningsPanel.vue';
+import { downloadBinary, formatHex } from '../utils/demo.js';
 
 const { t } = useI18n();
 
@@ -15,8 +17,10 @@ factory,  app,  factory, ,        1M,
 `;
 
 const csvInput = ref(defaultCsv);
+const flashSize = ref(4 * 1024 * 1024);
 const error = ref('');
 const generatedBin = ref<Uint8Array | null>(null);
+const warnings = ref<string[]>([]);
 const entries = ref<
   Array<{
     name: string;
@@ -46,10 +50,12 @@ function generateBinary() {
   error.value = '';
   generatedBin.value = null;
   entries.value = [];
+  warnings.value = [];
   try {
-    const table = PartitionTable.fromCSV(csvInput.value, { flashSize: 4 * 1024 * 1024 });
+    const table = PartitionTable.fromCSV(csvInput.value, { flashSize: flashSize.value });
     generatedBin.value = table.toBinary();
     entries.value = mapEntries(table);
+    warnings.value = table.warnings.map((warning) => warning.message);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -57,7 +63,7 @@ function generateBinary() {
 
 function downloadBin() {
   if (!generatedBin.value) return;
-  download(generatedBin.value, 'partitions.bin');
+  downloadBinary(generatedBin.value, 'partitions.bin');
 }
 
 function onUpload(event: Event) {
@@ -67,34 +73,22 @@ function onUpload(event: Event) {
   error.value = '';
   parsedCsv.value = '';
   entries.value = [];
+  warnings.value = [];
 
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const bin = new Uint8Array(reader.result as ArrayBuffer);
-      const table = PartitionTable.fromBinary(bin);
+      const table = PartitionTable.fromBinary(bin, { flashSize: flashSize.value });
       parsedCsv.value = table.toCSV();
       entries.value = mapEntries(table);
+      warnings.value = table.warnings.map((warning) => warning.message);
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
     }
   };
   reader.readAsArrayBuffer(file);
   input.value = '';
-}
-
-function download(data: Uint8Array, filename: string) {
-  const blob = new Blob([data], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function formatHex(n: number): string {
-  return '0x' + n.toString(16).padStart(6, '0');
 }
 
 function formatSize(n: number): string {
@@ -122,6 +116,17 @@ function formatSize(n: number): string {
       <div class="panel">
         <h3>{{ t('partitionTable.csvInput') }}</h3>
         <textarea v-model="csvInput" class="code-input" rows="8" spellcheck="false" />
+        <div class="options-row">
+          <label>
+            {{ t('partitionTable.flashSize') }}:
+            <select v-model="flashSize" class="input-small">
+              <option :value="2 * 1024 * 1024">2 MB</option>
+              <option :value="4 * 1024 * 1024">4 MB</option>
+              <option :value="8 * 1024 * 1024">8 MB</option>
+              <option :value="16 * 1024 * 1024">16 MB</option>
+            </select>
+          </label>
+        </div>
         <div class="btn-row">
           <button class="btn primary" @click="generateBinary">
             {{ t('partitionTable.generateBin') }}
@@ -137,6 +142,17 @@ function formatSize(n: number): string {
     <div v-if="subTab === 'parse'" class="tab-content">
       <div class="panel">
         <h3>{{ t('partitionTable.uploadBin') }}</h3>
+        <div class="options-row" style="margin-bottom: 0.75rem">
+          <label>
+            {{ t('partitionTable.flashSize') }}:
+            <select v-model="flashSize" class="input-small">
+              <option :value="2 * 1024 * 1024">2 MB</option>
+              <option :value="4 * 1024 * 1024">4 MB</option>
+              <option :value="8 * 1024 * 1024">8 MB</option>
+              <option :value="16 * 1024 * 1024">16 MB</option>
+            </select>
+          </label>
+        </div>
         <label class="file-upload">
           <input type="file" accept=".bin" @change="onUpload" />
           <span class="btn outline">{{ t('partitionTable.uploadBin') }}</span>
@@ -149,6 +165,7 @@ function formatSize(n: number): string {
     </div>
 
     <div v-if="error" class="error-box">{{ t('common.error') }}: {{ error }}</div>
+    <WarningsPanel :title="t('partitionTable.showWarnings')" :warnings="warnings" />
 
     <div v-if="entries.length" class="result-section">
       <h3>{{ t('partitionTable.entries') }}</h3>

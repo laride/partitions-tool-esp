@@ -25,6 +25,13 @@ Currently supports generation and parsing of the following partition formats:
   - SFN(8.3) or LFN
   - Wear leveling
 - SPIFFS `data.spiffs`
+- LittleFS `data.littlefs`
+
+## Live Demo
+
+Try the browser demo here:
+
+- https://laride.github.io/partitions-tool-esp/
 
 ## Installation
 
@@ -297,6 +304,10 @@ import { LittleFS, createDir, createFile } from 'partitions-tool-esp';
 
 const image = LittleFS.generate({
   imageSize: 0x10000,
+  blockSize: 4096,
+  readSize: 16,
+  progSize: 16,
+  inlineMax: 512,
   source: createDir('root', [createFile('hello.txt', new TextEncoder().encode('hello\n'))]),
 });
 

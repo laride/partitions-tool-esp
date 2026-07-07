@@ -1,5 +1,5 @@
-// Pack ./payload into a SPIFFS image (matching spiffsgen.py defaults used by
-// our tests) and read it back.
+// Pack ./payload into a SPIFFS image (matching our test defaults), then parse
+// it back and print best-effort warnings/files.
 // Run: pnpm tsx examples/spiffs.ts ./payload out.bin
 import { writeFile } from 'node:fs/promises';
 import { SPIFFS } from '../src/index.js';
@@ -21,6 +21,9 @@ async function main(): Promise<void> {
   console.log('wrote %s (%d bytes)', outFile, img.byteLength);
 
   const parsed = SPIFFS.parse(img, { pageSize: 256, objNameLen: 32, metaLen: 4 });
+  for (const warning of parsed.warnings) {
+    console.warn('warning:', warning.message);
+  }
   for (const f of parsed.files) {
     console.log(' - %s (%d bytes)', f.path, f.size);
   }

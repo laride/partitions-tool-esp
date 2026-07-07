@@ -4,6 +4,14 @@ import { useI18n } from 'vue-i18n';
 import * as SPIFFS from 'partitions-tool-esp/spiffs';
 import { fromFileList } from 'partitions-tool-esp/io/browser';
 import type { VirtualDirectory } from 'partitions-tool-esp';
+import WarningsPanel from './WarningsPanel.vue';
+import {
+  collectFileNames,
+  downloadBinary,
+  formatBytes,
+  formatWarnings,
+  toDownloadName,
+} from '../utils/demo.js';
 
 const { t } = useI18n();
 
@@ -22,6 +30,7 @@ const uploadedDir = ref<VirtualDirectory | null>(null);
 const fileNames = ref<string[]>([]);
 const error = ref('');
 const generatedBin = ref<Uint8Array | null>(null);
+const warnings = ref<string[]>([]);
 const parsedFiles = ref<Array<{ path: string; size: number; content: Uint8Array }>>([]);
 
 const imageSizeOptions = [
@@ -46,23 +55,11 @@ async function onFilesSelected(event: Event) {
   }
 }
 
-function collectFileNames(dir: VirtualDirectory, prefix = ''): string[] {
-  const names: string[] = [];
-  for (const child of dir.children) {
-    const path = prefix ? `${prefix}/${child.name}` : child.name;
-    if (child.kind === 'file') {
-      names.push(path);
-    } else {
-      names.push(...collectFileNames(child, path));
-    }
-  }
-  return names;
-}
-
 function generateImage() {
   if (!uploadedDir.value) return;
   error.value = '';
   generatedBin.value = null;
+  warnings.value = [];
   try {
     generatedBin.value = SPIFFS.generate({
       imageSize: imageSize.value,
@@ -81,7 +78,7 @@ function generateImage() {
 
 function downloadImage() {
   if (!generatedBin.value) return;
-  download(generatedBin.value, 'spiffs.bin');
+  downloadBinary(generatedBin.value, 'spiffs.bin');
 }
 
 function onUploadImage(event: Event) {
@@ -90,6 +87,7 @@ function onUploadImage(event: Event) {
   if (!file) return;
   error.value = '';
   parsedFiles.value = [];
+  warnings.value = [];
 
   const reader = new FileReader();
   reader.onload = () => {
@@ -100,6 +98,7 @@ function onUploadImage(event: Event) {
         objNameLen: objNameLen.value,
         metaLen: metaLen.value,
       });
+      warnings.value = formatWarnings(result.warnings);
       parsedFiles.value = result.files.map((f) => ({
         path: f.path,
         size: f.size,
@@ -113,29 +112,8 @@ function onUploadImage(event: Event) {
   input.value = '';
 }
 
-function download(data: Uint8Array, filename: string) {
-  const blob = new Blob([data], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function downloadParsedFile(file: { path: string; content: Uint8Array }) {
-  download(file.content, toDownloadName(file.path));
-}
-
-function toDownloadName(path: string): string {
-  const normalized = path.replace(/^\/+/, '');
-  return normalized.replace(/[\\/]/g, '__') || 'file.bin';
-}
-
-function formatSize(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
+  downloadBinary(file.content, toDownloadName(file.path));
 }
 </script>
 
@@ -212,7 +190,7 @@ function formatSize(n: number): string {
           </button>
           <button v-if="generatedBin" class="btn success" @click="downloadImage">
             {{ t('spiffs.downloadImage') }}
-            ({{ formatSize(generatedBin.byteLength) }})
+            ({{ formatBytes(generatedBin.byteLength) }})
           </button>
         </div>
       </div>
@@ -226,6 +204,8 @@ function formatSize(n: number): string {
           <span class="btn outline">{{ t('spiffs.uploadImage') }}</span>
         </label>
       </div>
+
+      <WarningsPanel :title="t('spiffs.parsedWarnings')" :warnings="warnings" />
 
       <div v-if="parsedFiles.length" class="result-section">
         <h3>{{ t('spiffs.parsedFiles') }}</h3>
@@ -243,7 +223,7 @@ function formatSize(n: number): string {
                 <td>
                   <code>{{ file.path }}</code>
                 </td>
-                <td>{{ formatSize(file.size) }}</td>
+                <td>{{ formatBytes(file.size) }}</td>
                 <td>
                   <button class="btn outline" @click="downloadParsedFile(file)">
                     {{ t('common.download') }}

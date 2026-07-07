@@ -1,4 +1,4 @@
-// Generate and parse a 4 MB flash partition table.
+// Generate and parse a partition table against a chosen flash size.
 // Run: pnpm tsx examples/partition-table.ts
 import { writeFile } from 'node:fs/promises';
 import { PartitionTable } from '../src/partition-table/index.js';
@@ -26,6 +26,9 @@ async function main(): Promise<void> {
   console.log('wrote partitions.bin (%d bytes)', bin.byteLength);
 
   const round = PartitionTable.fromBinary(bin);
+  for (const warning of round.warnings) {
+    console.warn('warning:', warning.message);
+  }
   console.log('round-trip CSV:\n%s', round.toCSV());
 }
 

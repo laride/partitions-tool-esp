@@ -4,7 +4,8 @@
     "partitionTable": "分区表",
     "nvs": "NVS",
     "spiffs": "SPIFFS",
-    "fatfs": "FatFS"
+    "fatfs": "FatFS",
+    "littlefs": "LittleFS"
   },
   "footer": "See more on GitHub",
   "common": {
@@ -28,7 +29,11 @@
     "files": "文件",
     "noFiles": "未选择文件",
     "generatedSize": "已生成镜像：{size} 字节",
-    "parseSuccess": "成功解析 {count} 个条目"
+    "parseSuccess": "成功解析 {count} 个条目",
+    "warnings": "告警",
+    "copy": "复制",
+    "yes": "是",
+    "no": "否"
   },
   "partitionTable": {
     "title": "分区表",
@@ -44,7 +49,9 @@
     "flags": "标志",
     "encrypted": "已加密",
     "readonly": "只读",
-    "parsedCsv": "解析 CSV 输出"
+    "parsedCsv": "解析 CSV 输出",
+    "flashSize": "Flash 大小",
+    "showWarnings": "解析告警"
   },
   "nvs": {
     "title": "NVS",
@@ -57,6 +64,13 @@
     "objectPlaceholder": "{\n  \"storage\": {\n    \"greeting\": \"hello world\",\n    \"counter\": 42\n  }\n}",
     "partitionSize": "分区大小（十六进制）",
     "version": "NVS 版本",
+    "encrypted": "加密输出",
+    "encryptionKey": "加密密钥（hex）",
+    "generateKey": "随机生成密钥",
+    "keyPartition": "Keys 分区",
+    "downloadKeyPartition": "下载 keys 分区",
+    "decryptionKey": "解密密钥（hex，可选）",
+    "parsedWarnings": "解析告警",
     "generateBin": "生成二进制",
     "parseBin": "解析二进制",
     "uploadBin": "上传 .bin",
@@ -69,7 +83,7 @@
   },
   "spiffs": {
     "title": "SPIFFS",
-    "desc": "从上传的文件生成 SPIFFS 文件系统镜像，或解析已有镜像。",
+    "desc": "从上传的文件生成 SPIFFS 文件系统镜像，或以 best-effort 模式解析已有镜像并显示告警。",
     "imageSize": "镜像大小",
     "pageSize": "页大小",
     "blockSize": "块大小",
@@ -83,16 +97,18 @@
     "downloadImage": "下载镜像",
     "parsedFiles": "解析文件列表",
     "path": "路径",
-    "fileSize": "大小"
+    "fileSize": "大小",
+    "parsedWarnings": "解析告警"
   },
   "fatfs": {
     "title": "FatFS",
-    "desc": "生成带可选磨损均衡的 FAT 文件系统镜像，或解析已有镜像。",
+    "desc": "生成 FAT12/16/32 文件系统镜像（可选磨损均衡），或以 best-effort 模式解析已有镜像并显示告警。",
     "partitionSize": "分区大小",
     "sectorSize": "扇区大小",
     "fatType": "FAT 类型",
     "fatTypeAuto": "自动",
     "longFilenames": "长文件名（LFN）",
+    "espIdfCompat": "ESP-IDF 兼容短文件名",
     "wearLeveling": "磨损均衡",
     "wlMode": "WL 模式",
     "generateImage": "生成镜像",
@@ -101,6 +117,27 @@
     "downloadImage": "下载镜像",
     "parsedFiles": "解析文件列表",
     "path": "路径",
-    "fileSize": "大小"
+    "fileSize": "大小",
+    "parsedWarnings": "解析告警"
+  },
+  "littlefs": {
+    "title": "LittleFS",
+    "desc": "从上传的文件生成 LittleFS 镜像，或解析已有镜像并显示 parser 告警。",
+    "imageSize": "镜像大小",
+    "blockSize": "块大小",
+    "readSize": "读大小",
+    "progSize": "写大小",
+    "nameMax": "文件名上限",
+    "inlineMax": "内联大小上限",
+    "blockCycles": "Block Cycles",
+    "generateImage": "生成镜像",
+    "parseImage": "解析镜像",
+    "uploadImage": "上传镜像",
+    "downloadImage": "下载镜像",
+    "parsedFiles": "解析文件列表",
+    "superblock": "Superblock",
+    "version": "版本",
+    "blockCount": "块数量",
+    "parsedWarnings": "解析告警"
   }
 }

@@ -4,7 +4,8 @@
     "partitionTable": "Partition Table",
     "nvs": "NVS",
     "spiffs": "SPIFFS",
-    "fatfs": "FatFS"
+    "fatfs": "FatFS",
+    "littlefs": "LittleFS"
   },
   "footer": "See more on GitHub",
   "common": {
@@ -28,7 +29,11 @@
     "files": "Files",
     "noFiles": "No files selected",
     "generatedSize": "Generated image: {size} bytes",
-    "parseSuccess": "Successfully parsed {count} items"
+    "parseSuccess": "Successfully parsed {count} items",
+    "warnings": "Warnings",
+    "copy": "Copy",
+    "yes": "Yes",
+    "no": "No"
   },
   "partitionTable": {
     "title": "Partition Table",
@@ -44,7 +49,9 @@
     "flags": "Flags",
     "encrypted": "Encrypted",
     "readonly": "ReadOnly",
-    "parsedCsv": "Parsed CSV Output"
+    "parsedCsv": "Parsed CSV Output",
+    "flashSize": "Flash Size",
+    "showWarnings": "Parser Warnings"
   },
   "nvs": {
     "title": "NVS (Non-Volatile Storage)",
@@ -57,6 +64,13 @@
     "objectPlaceholder": "{\n  \"storage\": {\n    \"greeting\": \"hello world\",\n    \"counter\": 42\n  }\n}",
     "partitionSize": "Partition Size (hex)",
     "version": "NVS Version",
+    "encrypted": "Encrypt Output",
+    "encryptionKey": "Encryption Key (hex)",
+    "generateKey": "Generate Random Key",
+    "keyPartition": "Keys Partition",
+    "downloadKeyPartition": "Download keys partition",
+    "decryptionKey": "Decryption Key (hex, optional)",
+    "parsedWarnings": "Parse Warnings",
     "generateBin": "Generate Binary",
     "parseBin": "Parse Binary",
     "uploadBin": "Upload .bin",
@@ -69,7 +83,7 @@
   },
   "spiffs": {
     "title": "SPIFFS",
-    "desc": "Generate SPIFFS filesystem images from uploaded files, or parse existing images.",
+    "desc": "Generate SPIFFS filesystem images from uploaded files, or parse existing images with best-effort warnings.",
     "imageSize": "Image Size",
     "pageSize": "Page Size",
     "blockSize": "Block Size",
@@ -83,16 +97,18 @@
     "downloadImage": "Download Image",
     "parsedFiles": "Parsed Files",
     "path": "Path",
-    "fileSize": "Size"
+    "fileSize": "Size",
+    "parsedWarnings": "Parse Warnings"
   },
   "fatfs": {
     "title": "FatFS",
-    "desc": "Generate FAT filesystem images with optional wear leveling, or parse existing images.",
+    "desc": "Generate FAT12/16/32 images with optional wear leveling, or parse existing images with best-effort warnings.",
     "partitionSize": "Partition Size",
     "sectorSize": "Sector Size",
     "fatType": "FAT Type",
     "fatTypeAuto": "Auto",
     "longFilenames": "Long Filenames (LFN)",
+    "espIdfCompat": "ESP-IDF Compatible Short Names",
     "wearLeveling": "Wear Leveling",
     "wlMode": "WL Mode",
     "generateImage": "Generate Image",
@@ -101,6 +117,27 @@
     "downloadImage": "Download Image",
     "parsedFiles": "Parsed Files",
     "path": "Path",
-    "fileSize": "Size"
+    "fileSize": "Size",
+    "parsedWarnings": "Parse Warnings"
+  },
+  "littlefs": {
+    "title": "LittleFS",
+    "desc": "Generate LittleFS images from uploaded files, or parse existing images with parser warnings.",
+    "imageSize": "Image Size",
+    "blockSize": "Block Size",
+    "readSize": "Read Size",
+    "progSize": "Prog Size",
+    "nameMax": "Name Max",
+    "inlineMax": "Inline Max",
+    "blockCycles": "Block Cycles",
+    "generateImage": "Generate Image",
+    "parseImage": "Parse Image",
+    "uploadImage": "Upload Image",
+    "downloadImage": "Download Image",
+    "parsedFiles": "Parsed Files",
+    "superblock": "Superblock",
+    "version": "Version",
+    "blockCount": "Block Count",
+    "parsedWarnings": "Parse Warnings"
   }
 }
