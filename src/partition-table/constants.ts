@@ -53,6 +53,8 @@ export const SUBTYPES: Record<number, Record<string, number>> = {
   },
 };
 
+export type ExtraPartitionSubtypes = Record<string, Record<string, number>>;
+
 // App subtypes include 16 OTA slots + 2 TEE OTA slots.
 export const MIN_PARTITION_SUBTYPE_APP_OTA = 0x10;
 export const NUM_PARTITION_SUBTYPE_APP_OTA = 16;
@@ -94,9 +96,36 @@ export function getPtypeName(ptype: number): string | undefined {
   return undefined;
 }
 
-export function getSubtypeName(ptype: number, subtype: number): string | undefined {
-  const map = SUBTYPES[ptype];
-  if (!map) return undefined;
+export function getSubtypeMap(
+  ptype: number,
+  extraSubtypes?: ExtraPartitionSubtypes,
+): Record<string, number> {
+  const map = { ...SUBTYPES[ptype] };
+  if (!extraSubtypes) return map;
+
+  const typeName = getPtypeName(ptype);
+  for (const [key, value] of Object.entries(extraSubtypes)) {
+    let keyType: number | undefined;
+    if (TYPES[key] !== undefined) keyType = TYPES[key]!;
+    else {
+      try {
+        keyType = parseInteger(key);
+      } catch {
+        keyType = undefined;
+      }
+    }
+    if (keyType === ptype) Object.assign(map, value);
+  }
+  if (typeName && extraSubtypes[typeName]) Object.assign(map, extraSubtypes[typeName]!);
+  return map;
+}
+
+export function getSubtypeName(
+  ptype: number,
+  subtype: number,
+  extraSubtypes?: ExtraPartitionSubtypes,
+): string | undefined {
+  const map = getSubtypeMap(ptype, extraSubtypes);
   for (const [k, v] of Object.entries(map)) if (v === subtype) return k;
   return undefined;
 }
@@ -119,6 +148,9 @@ export function parseInteger(v: string, keywords?: Record<string, number>): numb
   if (m) return Number.parseInt(trimmed, 16);
   const m2 = trimmed.match(/^-?[0-9]+$/);
   if (m2) return Number.parseInt(trimmed, 10);
+  const mOct = trimmed.match(/^-?0o[0-7]+$/i);
+  if (mOct)
+    return Number.parseInt(trimmed.replace(/^-?0o/i, ''), 8) * (trimmed.startsWith('-') ? -1 : 1);
   const m3 = trimmed.match(/^-?0b[01]+$/);
   if (m3)
     return Number.parseInt(trimmed.replace(/^-?0b/, ''), 2) * (trimmed.startsWith('-') ? -1 : 1);

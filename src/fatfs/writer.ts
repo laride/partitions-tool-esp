@@ -1,13 +1,14 @@
 import { asciiEncode } from '../common/binary.js';
 import { InputError } from '../common/errors.js';
 import { flattenFiles, VirtualDirectory, VirtualNode, walk } from '../common/virtual-fs.js';
-import { buildLfnEntries, buildShortAlias, needsLfn } from './lfn.js';
+import { buildLfnEntries, buildShortAlias, needsLfn, validateFatfsFilename } from './lfn.js';
 import {
   computeWlLayout,
   WearLevelingOptions,
   wrapWearLeveling,
   WL_SECTOR_SIZE,
   WlMode,
+  WL_FAT_SECTOR_SIZE_512,
 } from './wear-leveling.js';
 import {
   ATTR_ARCHIVE,
@@ -22,6 +23,8 @@ import {
   DEFAULT_VOLUME_LABEL,
   ENTRY_SIZE,
   FAT12,
+  FAT12_MAX_CLUSTERS,
+  FAT16,
   FATFS_INCEPTION_YEAR,
   JMP_BOOT,
   MAX_EXT_SIZE,
@@ -34,9 +37,8 @@ import {
   buildTimeEntry,
   FAT32,
   FAT16_MAX_CLUSTERS,
-  getFatSectorsCount,
   getFatSectorsCountForType,
-  getFatfsType,
+  NTRES_LFN_FITS_SHORT,
 } from './constants.js';
 
 export interface FatfsGenerateOptions {
@@ -54,8 +56,9 @@ export interface FatfsGenerateOptions {
   volumeUuid?: number;
   /**
    * Explicit file-system type override. If omitted, auto-detected from the
-   * cluster count like ESP-IDF's fatfsgen (FAT12/FAT16 only). Pass `32` to
-   * emit a FAT32 filesystem regardless of cluster count.
+   * data-cluster count like ESP-IDF's FatFs runtime. FAT32 must be requested
+   * explicitly with `32`; otherwise a FAT32-sized layout throws instead of
+   * emitting an image ESP-IDF would reject.
    */
   explicitFatType?: 12 | 16 | 32;
   /** Reserved sectors (FAT32 defaults to 32; FAT12/16 use 1). */
@@ -129,8 +132,8 @@ interface Layout {
  *  - duplicated FAT tables (default 2)
  *
  * Matches `fatfsgen.py` byte-for-byte when `use_default_datetime=True` is set on
- * the python side and `volumeUuid` matches. Pass `espIdfCompat: true` (the
- * default) when you want LFN output byte-identical to
+ * the python side and `volumeUuid` matches. Pass `espIdfCompat: true` when
+ * you want LFN output byte-identical to
  * `fatfsgen.py --long_name_support`.
  */
 export function generate(opts: FatfsGenerateOptions): Uint8Array {
@@ -147,12 +150,16 @@ export function generate(opts: FatfsGenerateOptions): Uint8Array {
   let partitionSize = opts.size;
   let fatfsSize = opts.size;
   if (wlConfig) {
-    if (sectorSize !== WL_SECTOR_SIZE) {
+    if (sectorSize !== WL_SECTOR_SIZE && sectorSize !== WL_FAT_SECTOR_SIZE_512) {
       throw new InputError(
-        `wear leveling requires sector size ${WL_SECTOR_SIZE}, got ${sectorSize}`,
+        `wear leveling requires sector size 512 or ${WL_SECTOR_SIZE}, got ${sectorSize}`,
       );
     }
-    const wlLayout = computeWlLayout(partitionSize, wlConfig.mode ?? 'perf');
+    const wlLayout = computeWlLayout(
+      partitionSize,
+      wlConfig.mode ?? 'perf',
+      sectorSize as 512 | 4096,
+    );
     fatfsSize = wlLayout.plainImageSize;
   }
   const sectorsCount = fatfsSize / sectorSize;
@@ -192,13 +199,11 @@ export function generate(opts: FatfsGenerateOptions): Uint8Array {
 
   const longFilenamesAllowed = opts.longFilenames ?? true;
   const espIdfCompat = opts.espIdfCompat ?? true;
-  const treeNeedsLfn = longFilenamesAllowed && treeHasLfnName(opts.source);
   const ctx: WriterContext = {
     image,
     layout,
     nextFreeCluster: layout.fatType === FAT32 ? layout.rootClusterId : 1,
     longFilenames: longFilenamesAllowed,
-    lfnActive: treeNeedsLfn,
     espIdfCompat,
   };
 
@@ -246,17 +251,7 @@ interface WriterContext {
   nextFreeCluster: number;
   /** User preference: may LFN be emitted at all? */
   longFilenames: boolean;
-  /** Auto-detected: does any file/dir in the tree actually need LFN? */
-  lfnActive: boolean;
   espIdfCompat: boolean;
-}
-
-function treeHasLfnName(dir: VirtualDirectory): boolean {
-  for (const child of dir.children) {
-    if (needsLfn(child.name)) return true;
-    if (child.kind === 'dir' && treeHasLfnName(child)) return true;
-  }
-  return false;
 }
 
 function buildLayout(args: {
@@ -269,30 +264,169 @@ function buildLayout(args: {
   reservedSectorsCount?: number;
 }): Layout {
   const { sectorsCount, sectorSize, sectorsPerCluster, fatTablesCount, explicitFatType } = args;
-
-  // Decide FAT type first. Auto-detection uses a trial FAT12/16 layout
-  // estimate; for FAT32 the user must request it explicitly.
-  const trialFatSectors = getFatSectorsCount(sectorsCount, sectorSize);
-  const trialRootSectors =
-    ((args.rootEntryCount ?? DEFAULT_ROOT_ENTRIES) * ENTRY_SIZE) / sectorSize;
-  const trialDataSectors = sectorsCount - 1 - trialFatSectors * fatTablesCount - trialRootSectors;
-  const trialClusters = Math.floor(trialDataSectors / sectorsPerCluster) + RESERVED_CLUSTERS_COUNT;
-  const autoType = getFatfsType(trialClusters);
-  const fatType: 12 | 16 | 32 = explicitFatType ?? (autoType === 32 ? 16 : autoType);
-
-  if (fatType === FAT32)
-    return buildFat32Layout({ ...args, reservedSectorsCount: args.reservedSectorsCount });
-
+  const rootEntryCount = normalizeRootEntryCount(
+    args.rootEntryCount ?? DEFAULT_ROOT_ENTRIES,
+    sectorSize,
+  );
   const reservedSectorsCnt = args.reservedSectorsCount ?? 1;
-  const rootEntryCount = args.rootEntryCount ?? DEFAULT_ROOT_ENTRIES;
   const rootDirSectorsCnt = (rootEntryCount * ENTRY_SIZE) / sectorSize;
-  if (!Number.isInteger(rootDirSectorsCnt)) {
-    throw new InputError('root entry count * 32 must be a multiple of sector size');
+
+  // Decide FAT type from the number of *data* clusters, matching FatFs/ESP-IDF
+  // runtime mount logic (ff.c's inclusive MAX_FAT12/MAX_FAT16 waterfall).
+  // FAT[0] and FAT[1] are reserved FAT entries and are deliberately not
+  // included in this type decision:
+  //   FAT12: dataClusters <= 4085
+  //   FAT16: dataClusters <= 65525
+  //   FAT32: dataClusters > 65525
+  const fat12 = buildFat1216Layout({
+    sectorsCount,
+    sectorSize,
+    sectorsPerCluster,
+    fatTablesCount,
+    reservedSectorsCnt,
+    rootDirSectorsCnt,
+    rootEntryCount,
+    fatType: FAT12,
+  });
+  const fat12DataClusters = fat12.totalClusters - RESERVED_CLUSTERS_COUNT;
+  const fat16 = buildFat1216Layout({
+    sectorsCount,
+    sectorSize,
+    sectorsPerCluster,
+    fatTablesCount,
+    reservedSectorsCnt,
+    rootDirSectorsCnt,
+    rootEntryCount,
+    fatType: FAT16,
+  });
+  const fat16DataClusters = fat16.totalClusters - RESERVED_CLUSTERS_COUNT;
+  // Use inclusive <= to match ff.c's MAX_FAT12/MAX_FAT16 waterfall:
+  //   4085 clusters → FAT12, 65525 clusters → FAT16, >65525 → FAT32.
+  const autoType =
+    fat12DataClusters <= FAT12_MAX_CLUSTERS
+      ? FAT12
+      : fat16DataClusters <= FAT16_MAX_CLUSTERS
+        ? FAT16
+        : FAT32;
+  if (autoType === FAT32 && explicitFatType !== FAT32) {
+    const fat32 = buildFat32Layout({ ...args, reservedSectorsCount: args.reservedSectorsCount });
+    const fat32DataClusters = fat32.totalClusters - RESERVED_CLUSTERS_COUNT;
+    throw new InputError(
+      `layout has ${fat32DataClusters} data clusters, which FatFs classifies as FAT32; pass explicitFatType: 32 or increase sectorsPerCluster`,
+    );
   }
-  const fatSectorsCount = getFatSectorsCount(sectorsCount, sectorSize);
-  const dataSectors =
-    sectorsCount - reservedSectorsCnt - fatSectorsCount * fatTablesCount - rootDirSectorsCnt;
-  const totalClusters = Math.floor(dataSectors / sectorsPerCluster) + RESERVED_CLUSTERS_COUNT;
+  if (explicitFatType === FAT12 && autoType !== FAT12) {
+    throw new InputError(
+      `explicitFatType: 12 is inconsistent with this layout; FatFs classifies it as FAT${autoType}`,
+    );
+  }
+  if (explicitFatType === FAT16 && autoType !== FAT16) {
+    throw new InputError(
+      `explicitFatType: 16 is inconsistent with this layout; FatFs classifies it as FAT${autoType}`,
+    );
+  }
+
+  let fatType: 12 | 16 | 32 = explicitFatType ?? autoType;
+
+  if (fatType === FAT32) {
+    const fat32 = buildFat32Layout({ ...args, reservedSectorsCount: args.reservedSectorsCount });
+    // ff.c: FAT32 requires nclst > MAX_FAT16 (65525). 65525 clusters is still
+    // FAT16 per ff.c's inclusive <= boundary, so we need strictly >.
+    if (fat32.totalClusters - RESERVED_CLUSTERS_COUNT > FAT16_MAX_CLUSTERS) {
+      return fat32;
+    }
+    if (explicitFatType === FAT32) {
+      throw new InputError(
+        `explicitFatType: 32 requires more than ${FAT16_MAX_CLUSTERS} data clusters for a valid FAT32 layout`,
+      );
+    }
+    fatType = autoType === 32 ? FAT16 : autoType;
+  }
+
+  return fatType === FAT12 ? fat12 : fat16;
+}
+
+function normalizeRootEntryCount(requested: number, sectorSize: number): number {
+  const entriesPerSector = sectorSize / ENTRY_SIZE;
+  if (!Number.isInteger(entriesPerSector) || entriesPerSector <= 0) return requested;
+  if (requested % entriesPerSector === 0) return requested;
+  return Math.ceil(requested / entriesPerSector) * entriesPerSector;
+}
+
+function buildFat32Layout(args: {
+  sectorsCount: number;
+  sectorSize: number;
+  sectorsPerCluster: number;
+  fatTablesCount: number;
+  reservedSectorsCount?: number;
+}): Layout {
+  const { sectorsCount, sectorSize, sectorsPerCluster, fatTablesCount } = args;
+  const reservedSectorsCnt = args.reservedSectorsCount ?? 32;
+  if (reservedSectorsCnt < 8) {
+    throw new InputError(
+      'FAT32 requires at least 8 reserved sectors (boot + FSInfo + backup boot + backup FSInfo)',
+    );
+  }
+  // Iteratively converge on FAT size.
+  let fatSectorsCount = 1;
+  let totalClusters = 0;
+  for (let i = 0; i < 8; i++) {
+    const dataSectors = sectorsCount - reservedSectorsCnt - fatSectorsCount * fatTablesCount;
+    if (dataSectors <= 0) throw new InputError('FAT32 partition too small for requested layout');
+    const dataClusters = Math.floor(dataSectors / sectorsPerCluster);
+    totalClusters = dataClusters + RESERVED_CLUSTERS_COUNT;
+    fatSectorsCount = getFatSectorsCountForType(dataClusters, sectorSize, FAT32);
+  }
+  const dataRegionStart = (reservedSectorsCnt + fatSectorsCount * fatTablesCount) * sectorSize;
+  return {
+    sectorSize,
+    sectorsPerCluster,
+    fatTablesCount,
+    reservedSectorsCnt,
+    rootDirSectorsCnt: 0,
+    sectorsCount,
+    fatSectorsCount,
+    fatType: FAT32,
+    totalClusters,
+    dataRegionStart,
+    rootDirStart: 0,
+    rootEntryCount: 0,
+    rootClusterId: 2,
+    fsInfoSector: 1,
+    backupBootSector: 6,
+  };
+}
+
+function buildFat1216Layout(args: {
+  sectorsCount: number;
+  sectorSize: number;
+  sectorsPerCluster: number;
+  fatTablesCount: number;
+  reservedSectorsCnt: number;
+  rootDirSectorsCnt: number;
+  rootEntryCount: number;
+  fatType: 12 | 16;
+}): Layout {
+  const {
+    sectorsCount,
+    sectorSize,
+    sectorsPerCluster,
+    fatTablesCount,
+    reservedSectorsCnt,
+    rootDirSectorsCnt,
+    rootEntryCount,
+    fatType,
+  } = args;
+  let fatSectorsCount = 1;
+  let totalClusters = 0;
+  for (let i = 0; i < 8; i++) {
+    const dataSectors =
+      sectorsCount - reservedSectorsCnt - fatSectorsCount * fatTablesCount - rootDirSectorsCnt;
+    if (dataSectors <= 0) throw new InputError('FAT partition too small for requested layout');
+    const dataClusters = Math.floor(dataSectors / sectorsPerCluster);
+    totalClusters = dataClusters + RESERVED_CLUSTERS_COUNT;
+    fatSectorsCount = getFatSectorsCountForType(dataClusters, sectorSize, fatType);
+  }
   const dataRegionStart =
     (reservedSectorsCnt + fatSectorsCount * fatTablesCount + rootDirSectorsCnt) * sectorSize;
   const rootDirStart = (reservedSectorsCnt + fatSectorsCount * fatTablesCount) * sectorSize;
@@ -312,47 +446,6 @@ function buildLayout(args: {
     rootClusterId: 0,
     fsInfoSector: 0,
     backupBootSector: 0,
-  };
-}
-
-function buildFat32Layout(args: {
-  sectorsCount: number;
-  sectorSize: number;
-  sectorsPerCluster: number;
-  fatTablesCount: number;
-  reservedSectorsCount?: number;
-}): Layout {
-  const { sectorsCount, sectorSize, sectorsPerCluster, fatTablesCount } = args;
-  const reservedSectorsCnt = args.reservedSectorsCount ?? 32;
-  if (reservedSectorsCnt < 7) {
-    throw new InputError('FAT32 requires at least 7 reserved sectors (FSInfo + backup)');
-  }
-  // Iteratively converge on FAT size.
-  let fatSectorsCount = 1;
-  let totalClusters = 0;
-  for (let i = 0; i < 8; i++) {
-    const dataSectors = sectorsCount - reservedSectorsCnt - fatSectorsCount * fatTablesCount;
-    if (dataSectors <= 0) throw new InputError('FAT32 partition too small for requested layout');
-    totalClusters = Math.floor(dataSectors / sectorsPerCluster) + RESERVED_CLUSTERS_COUNT;
-    fatSectorsCount = getFatSectorsCountForType(totalClusters, sectorSize, FAT32);
-  }
-  const dataRegionStart = (reservedSectorsCnt + fatSectorsCount * fatTablesCount) * sectorSize;
-  return {
-    sectorSize,
-    sectorsPerCluster,
-    fatTablesCount,
-    reservedSectorsCnt,
-    rootDirSectorsCnt: 0,
-    sectorsCount,
-    fatSectorsCount,
-    fatType: FAT32,
-    totalClusters,
-    dataRegionStart,
-    rootDirStart: 0,
-    rootEntryCount: 0,
-    rootClusterId: 2,
-    fsInfoSector: 1,
-    backupBootSector: 6,
   };
 }
 
@@ -503,6 +596,12 @@ function allocateCluster(ctx: WriterContext): number {
     ctx.layout.fatType === FAT12 ? 0xfff : ctx.layout.fatType === 16 ? 0xffff : 0x0fffffff;
   setFat(ctx.layout, ctx.image, id, endMarker);
   const addr = clusterDataAddress(ctx.layout, id);
+  // Zero-fill the entire cluster (all sectors_per_cluster sectors).
+  // IDF's fatfsgen.py allocate_cluster() resets only one sector per cluster
+  // due to get_dir_size() passing cluster_size=sector_size rather than the
+  // real cluster size. For sectors_per_cluster > 1 this leaves trailing
+  // sectors un-zeroed (staying 0xFF from the initial image fill). TS zeros
+  // the full cluster for correctness.
   ctx.image.fill(0, addr, addr + ctx.layout.sectorSize * ctx.layout.sectorsPerCluster);
   return id;
 }
@@ -525,7 +624,7 @@ function emitDirectory(
   let currentClusterId = firstClusterId;
   let entriesPerCluster = usesFixedRoot
     ? ctx.layout.rootEntryCount
-    : ctx.layout.sectorSize / ENTRY_SIZE;
+    : (ctx.layout.sectorSize * ctx.layout.sectorsPerCluster) / ENTRY_SIZE;
   let entryIndexInCluster = 0;
   let entryAbsAddr = startAddr;
 
@@ -536,13 +635,19 @@ function emitDirectory(
       setFat(ctx.layout, ctx.image, currentClusterId, next);
       currentClusterId = next;
       entryIndexInCluster = 0;
-      entriesPerCluster = ctx.layout.sectorSize / ENTRY_SIZE;
+      entriesPerCluster = (ctx.layout.sectorSize * ctx.layout.sectorsPerCluster) / ENTRY_SIZE;
       entryAbsAddr = clusterDataAddress(ctx.layout, currentClusterId);
     }
     const addr = entryAbsAddr + entryIndexInCluster * ENTRY_SIZE;
     entryIndexInCluster += 1;
     return addr;
   };
+
+  const usedShortNames = new Set<string>();
+  if (!isRoot) {
+    usedShortNames.add(shortKeyFromParts('.', ''));
+    usedShortNames.add(shortKeyFromParts('..', ''));
+  }
 
   // Seed "." and ".." for non-root dirs (always short entries).
   if (!isRoot) {
@@ -554,12 +659,14 @@ function emitDirectory(
       size: 0,
     });
     // FAT spec: on FAT32, ".." in a subdirectory of the root must read as 0,
-    // not the root cluster. FAT12/16 keep our internal root marker (1) to
-    // match ESP-IDF's on-disk layout.
+    // not the root cluster. For FAT12/16 we keep ESP-IDF's root marker (1)
+    // only in compatibility mode; standards mode writes 0 instead.
     const dotDotCluster =
       ctx.layout.fatType === FAT32 && parentClusterId === ctx.layout.rootClusterId
         ? 0
-        : parentClusterId;
+        : ctx.layout.fatType !== FAT32 && !ctx.espIdfCompat && parentClusterId === 1
+          ? 0
+          : parentClusterId;
     writeEntry(ctx, allocEntrySlot(), {
       name: '..',
       ext: '',
@@ -573,10 +680,8 @@ function emitDirectory(
   const children = [...dir.children].sort((a, b) =>
     a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
   );
-  const prefixCounts = new Map<string, number>();
-
   for (const child of children) {
-    emitChild(ctx, child, allocEntrySlot, prefixCounts, firstClusterId);
+    emitChild(ctx, child, allocEntrySlot, firstClusterId, usedShortNames);
   }
 
   // Silence unused import warnings (reserved for potential future walk usage).
@@ -588,10 +693,17 @@ function emitChild(
   ctx: WriterContext,
   child: VirtualNode,
   allocEntrySlot: () => number,
-  prefixCounts: Map<string, number>,
   parentClusterId: number,
+  usedShortNames: Set<string>,
 ): void {
-  const requiresLfn = needsLfn(child.name);
+  validateFatfsFilename(child.name);
+  // IDF's fatfsgen.py uppercases the filename before SFN validation:
+  //   folder_relative_path = folder_relative_path.upper()
+  // So 'hello.txt' becomes 'HELLO.TXT', which fits in 8.3 → stored as a short
+  // entry with DIR_NTRes=0x18 (not an LFN chain). Without espIdfCompat the
+  // standard path is taken: any lowercase letter triggers LFN.
+  const nameForLfnCheck = ctx.espIdfCompat ? uppercaseAscii(child.name) : child.name;
+  const requiresLfn = needsLfn(nameForLfnCheck);
 
   let firstCluster = 0;
   const size = child.kind === 'file' ? child.content.length : 0;
@@ -613,8 +725,8 @@ function emitChild(
     // ESP-IDF uppercases the path (including the base name) before LFN
     // processing. This is what ends up stored (lowercased again) in the LFN
     // entries and produces the short alias from the uppercase stem.
-    const lfnSource = ctx.espIdfCompat ? child.name.toUpperCase() : child.name;
-    const alias = buildShortAlias(child.name, prefixCounts, { espIdfCompat: ctx.espIdfCompat });
+    const lfnSource = ctx.espIdfCompat ? uppercaseAscii(child.name) : child.name;
+    const alias = buildShortAlias(child.name, usedShortNames);
     const lfnEntries = buildLfnEntries(lfnSource, alias.bytes11, {
       espIdfCompat: ctx.espIdfCompat,
     });
@@ -630,14 +742,17 @@ function emitChild(
     });
   } else {
     const { name, ext } = splitToShortName(child.name);
+    const short11 = new Uint8Array(11).fill(PAD_CHAR);
+    short11.set(asciiEncode(name), 0);
+    short11.set(asciiEncode(ext), 8);
+    usedShortNames.add(bytes11Key(short11));
     writeEntry(ctx, allocEntrySlot(), {
       name,
       ext,
       attr,
       firstCluster,
       size,
-      // `DIR_NTRes=0x18` marks "short-entry coexists with LFN chain" in ESP-IDF.
-      ntres: ctx.lfnActive ? 0x18 : 0x00,
+      ntres: ctx.longFilenames && ctx.espIdfCompat ? NTRES_LFN_FITS_SHORT : 0x00,
     });
   }
 
@@ -653,6 +768,21 @@ function splitToShortName(filename: string): { name: string; ext: string } {
   const dot = upper.lastIndexOf('.');
   if (dot < 0) return { name: upper, ext: '' };
   return { name: upper.slice(0, dot), ext: upper.slice(dot + 1) };
+}
+
+function uppercaseAscii(value: string): string {
+  return value.replace(/[a-z]/g, (ch) => ch.toUpperCase());
+}
+
+function shortKeyFromParts(name: string, ext: string): string {
+  const short11 = new Uint8Array(11).fill(PAD_CHAR);
+  short11.set(asciiEncode(name), 0);
+  short11.set(asciiEncode(ext), 8);
+  return bytes11Key(short11);
+}
+
+function bytes11Key(short11: Uint8Array): string {
+  return Array.from(short11, (v) => String.fromCharCode(v)).join('');
 }
 
 interface EntryParams {

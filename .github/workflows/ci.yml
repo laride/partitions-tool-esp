@@ -24,6 +24,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # uv is used to run the Python scripts for test
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install and activate uv environment
+        run: |
+          uv venv --python cp313
+          uv pip install littlefs-python
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
 

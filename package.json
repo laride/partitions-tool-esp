@@ -1,47 +1,123 @@
 {
   "name": "partitions-tool-esp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Pure TypeScript library to generate and parse ESP-IDF partition tables, NVS, SPIFFS and FatFS partition images (Node + Browser).",
   "type": "module",
   "sideEffects": false,
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
       "require": "./dist/index.cjs"
     },
     "./partition-table": {
-      "types": "./dist/partition-table/index.d.ts",
-      "import": "./dist/partition-table/index.js",
+      "types": "./src/partition-table/index.ts",
+      "import": "./src/partition-table/index.ts",
       "require": "./dist/partition-table/index.cjs"
     },
     "./nvs": {
-      "types": "./dist/nvs/index.d.ts",
-      "import": "./dist/nvs/index.js",
+      "types": "./src/nvs/index.ts",
+      "import": "./src/nvs/index.ts",
       "require": "./dist/nvs/index.cjs"
     },
     "./spiffs": {
-      "types": "./dist/spiffs/index.d.ts",
-      "import": "./dist/spiffs/index.js",
+      "types": "./src/spiffs/index.ts",
+      "import": "./src/spiffs/index.ts",
       "require": "./dist/spiffs/index.cjs"
     },
     "./fatfs": {
-      "types": "./dist/fatfs/index.d.ts",
-      "import": "./dist/fatfs/index.js",
+      "types": "./src/fatfs/index.ts",
+      "import": "./src/fatfs/index.ts",
       "require": "./dist/fatfs/index.cjs"
     },
+    "./littlefs": {
+      "types": "./src/littlefs/index.ts",
+      "import": "./src/littlefs/index.ts",
+      "require": "./dist/littlefs/index.cjs"
+    },
     "./io/node": {
-      "types": "./dist/io/node.d.ts",
-      "import": "./dist/io/node.js",
+      "types": "./src/io/node.ts",
+      "import": "./src/io/node.ts",
       "require": "./dist/io/node.cjs"
     },
     "./io/browser": {
-      "types": "./dist/io/browser.d.ts",
-      "import": "./dist/io/browser.js",
+      "types": "./src/io/browser.ts",
+      "import": "./src/io/browser.ts",
       "require": "./dist/io/browser.cjs"
+    }
+  },
+  "publishConfig": {
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.mjs",
+    "types": "./dist/index.d.mts",
+    "exports": {
+      ".": {
+        "types": {
+          "import": "./dist/index.d.mts",
+          "require": "./dist/index.d.cts"
+        },
+        "import": "./dist/index.mjs",
+        "require": "./dist/index.cjs"
+      },
+      "./partition-table": {
+        "types": {
+          "import": "./dist/partition-table/index.d.mts",
+          "require": "./dist/partition-table/index.d.cts"
+        },
+        "import": "./dist/partition-table/index.mjs",
+        "require": "./dist/partition-table/index.cjs"
+      },
+      "./nvs": {
+        "types": {
+          "import": "./dist/nvs/index.d.mts",
+          "require": "./dist/nvs/index.d.cts"
+        },
+        "import": "./dist/nvs/index.mjs",
+        "require": "./dist/nvs/index.cjs"
+      },
+      "./spiffs": {
+        "types": {
+          "import": "./dist/spiffs/index.d.mts",
+          "require": "./dist/spiffs/index.d.cts"
+        },
+        "import": "./dist/spiffs/index.mjs",
+        "require": "./dist/spiffs/index.cjs"
+      },
+      "./fatfs": {
+        "types": {
+          "import": "./dist/fatfs/index.d.mts",
+          "require": "./dist/fatfs/index.d.cts"
+        },
+        "import": "./dist/fatfs/index.mjs",
+        "require": "./dist/fatfs/index.cjs"
+      },
+      "./littlefs": {
+        "types": {
+          "import": "./dist/littlefs/index.d.mts",
+          "require": "./dist/littlefs/index.d.cts"
+        },
+        "import": "./dist/littlefs/index.mjs",
+        "require": "./dist/littlefs/index.cjs"
+      },
+      "./io/node": {
+        "types": {
+          "import": "./dist/io/node.d.mts",
+          "require": "./dist/io/node.d.cts"
+        },
+        "import": "./dist/io/node.mjs",
+        "require": "./dist/io/node.cjs"
+      },
+      "./io/browser": {
+        "types": {
+          "import": "./dist/io/browser.d.mts",
+          "require": "./dist/io/browser.d.cts"
+        },
+        "import": "./dist/io/browser.mjs",
+        "require": "./dist/io/browser.cjs"
+      }
     }
   },
   "files": [
@@ -70,6 +146,7 @@
     "nvs",
     "spiffs",
     "fatfs",
+    "littlefs",
     "flash",
     "firmware"
   ],
@@ -85,6 +162,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.2.0"
   },
   "devDependencies": {
@@ -94,8 +172,8 @@
     "oxfmt": "^0.54.0",
     "oxlint": "^1.69.0",
     "tsdown": "^0.22.2",
-    "typescript": "^6.0.3",
-    "vite": "^8.0.16",
+    "typescript": "catalog:",
+    "vite": "catalog:",
     "vitest": "^4.1.9"
   },
   "engines": {

@@ -3,6 +3,7 @@ import { NvsEntryDef } from './writer.js';
 
 /** Width of an integral NVS value. */
 export type NvsIntType = 'u8' | 'i8' | 'u16' | 'i16' | 'u32' | 'i32' | 'u64' | 'i64';
+export type NvsFloatType = 'float' | 'double';
 
 /**
  * Short-hand value description for {@link NvsObject}. The shape determines
@@ -20,6 +21,7 @@ export type NvsValue =
   | string
   | Uint8Array
   | { type: NvsIntType; value: number | bigint | string }
+  | { type: NvsFloatType; value: number | string }
   | { type: 'string'; value: string }
   | { type: 'binary'; value: Uint8Array | string; encoding?: 'raw' | 'hex2bin' | 'base64' };
 
@@ -98,6 +100,9 @@ function valueToEntry(key: string, value: NvsValue): NvsEntryDef[] {
       case 'u64':
       case 'i64':
         return [{ type: value.type, key, value: value.value }];
+      case 'float':
+      case 'double':
+        return [{ type: value.type, key, value: value.value }];
       default:
         throw new InputError(`unknown NVS value type for key '${key}'`);
     }
@@ -163,6 +168,12 @@ export class NvsBuilder {
   i64(key: string, value: number | bigint): this {
     return this.addInt('i64', key, value);
   }
+  float(key: string, value: number): this {
+    return this.addFloat('float', key, value);
+  }
+  double(key: string, value: number): this {
+    return this.addFloat('double', key, value);
+  }
 
   string(key: string, value: string): this {
     this.requireNs();
@@ -190,6 +201,12 @@ export class NvsBuilder {
   }
 
   private addInt(type: NvsIntType, key: string, value: number | bigint): this {
+    this.requireNs();
+    this.entries.push({ type, key, value });
+    return this;
+  }
+
+  private addFloat(type: NvsFloatType, key: string, value: number): this {
     this.requireNs();
     this.entries.push({ type, key, value });
     return this;

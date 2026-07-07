@@ -149,3 +149,7 @@ vite.config.ts.timestamp-*
 
 # Husky
 .husky/_
+
+# Python Related
+__pycache__/
+**/.venv

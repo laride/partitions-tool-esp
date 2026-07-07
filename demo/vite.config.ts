@@ -54,14 +54,4 @@ function spa404Plugin(): Plugin {
 export default defineConfig({
   base: '/partitions-tool-esp/',
   plugins: [markdownPlugin(), vue(), spa404Plugin()],
-  resolve: {
-    alias: {
-      'partitions-tool-esp/partition-table': resolve(__dirname, '../src/partition-table/index.ts'),
-      'partitions-tool-esp/nvs': resolve(__dirname, '../src/nvs/index.ts'),
-      'partitions-tool-esp/spiffs': resolve(__dirname, '../src/spiffs/index.ts'),
-      'partitions-tool-esp/fatfs': resolve(__dirname, '../src/fatfs/index.ts'),
-      'partitions-tool-esp/io/browser': resolve(__dirname, '../src/io/browser.ts'),
-      'partitions-tool-esp': resolve(__dirname, '../src/index.ts'),
-    },
-  },
 });

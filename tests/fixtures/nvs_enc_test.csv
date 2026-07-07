@@ -1,0 +1,4 @@
+key,type,encoding,value
+test_ns,namespace,,
+u8_key,data,u8,42
+str_key,data,string,hello

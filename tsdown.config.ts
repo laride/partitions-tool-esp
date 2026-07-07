@@ -7,6 +7,7 @@ export default defineConfig({
     'nvs/index': 'src/nvs/index.ts',
     'spiffs/index': 'src/spiffs/index.ts',
     'fatfs/index': 'src/fatfs/index.ts',
+    'littlefs/index': 'src/littlefs/index.ts',
     'io/node': 'src/io/node.ts',
     'io/browser': 'src/io/browser.ts',
   },

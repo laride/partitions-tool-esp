@@ -5,6 +5,7 @@ export const HEADER_SIZE = 32;
 export const BITMAP_SIZE = 32;
 export const FIRST_ENTRY_OFFSET = 64;
 export const ENTRIES_PER_PAGE = 126;
+export const CHUNK_MAX_SIZE = ENTRY_SIZE * (ENTRIES_PER_PAGE - 1);
 
 export const CHUNK_ANY = 0xff;
 
@@ -17,6 +18,17 @@ export const PAGE_STATE_CORRUPTED = 0x00000000;
 export const VERSION1 = 0xff;
 export const VERSION2 = 0xfe;
 
+/**
+ * Per-page variable-length size limits used by `esp_idf_nvs_partition_gen`
+ * (`Page.PAGE_PARAMS['max_blob_size']`). These apply when **generating** partition
+ * images, not to the IDF C++ runtime write path (`Page::CHUNK_MAX_SIZE` is always
+ * 4000 bytes).
+ *
+ * - V2 (default): 4000 = (ENTRIES_PER_PAGE - 1) × ENTRY_SIZE; supports multipage
+ *   blobs via `blob_data` / `blob_index`.
+ * - V1 (legacy): 1984 = 62 × 32, half of the V1 generator's per-page blob budget.
+ *   Prefer V2 for new projects; pass `version: 1` only for old V1 images.
+ */
 export const MAX_BLOB_SIZE = {
   [VERSION1]: 1984,
   [VERSION2]: 4000,
@@ -31,13 +43,25 @@ export const ITEM_TYPE = {
   i32: 0x14,
   u64: 0x08,
   i64: 0x18,
+  float: 0x24,
+  double: 0x28,
   string: 0x21,
   blob: 0x41,
   blob_data: 0x42,
   blob_index: 0x48,
 } as const;
 
-export type PrimitiveType = 'u8' | 'i8' | 'u16' | 'i16' | 'u32' | 'i32' | 'u64' | 'i64';
+export type PrimitiveType =
+  | 'u8'
+  | 'i8'
+  | 'u16'
+  | 'i16'
+  | 'u32'
+  | 'i32'
+  | 'u64'
+  | 'i64'
+  | 'float'
+  | 'double';
 export type VarlenType = 'string' | 'binary';
 
 export const ITEM_TYPE_NAME: Record<number, string> = {
@@ -49,6 +73,8 @@ export const ITEM_TYPE_NAME: Record<number, string> = {
   0x14: 'i32',
   0x08: 'u64',
   0x18: 'i64',
+  0x24: 'float',
+  0x28: 'double',
   0x21: 'string',
   0x41: 'blob',
   0x42: 'blob_data',

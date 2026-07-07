@@ -4,6 +4,14 @@ import { useI18n } from 'vue-i18n';
 import * as FatFS from 'partitions-tool-esp/fatfs';
 import { fromFileList } from 'partitions-tool-esp/io/browser';
 import type { VirtualDirectory } from 'partitions-tool-esp';
+import WarningsPanel from './WarningsPanel.vue';
+import {
+  collectFileNames,
+  downloadBinary,
+  formatBytes,
+  formatWarnings,
+  toDownloadName,
+} from '../utils/demo.js';
 
 const { t } = useI18n();
 
@@ -14,6 +22,7 @@ const partitionSize = ref(512 * 1024);
 const sectorSize = ref(4096);
 const fatType = ref<0 | 12 | 16 | 32>(0);
 const longFilenames = ref(true);
+const espIdfCompat = ref(true);
 const wearLeveling = ref(false);
 const wlMode = ref<'perf' | 'safe'>('perf');
 
@@ -21,6 +30,7 @@ const uploadedDir = ref<VirtualDirectory | null>(null);
 const fileNames = ref<string[]>([]);
 const error = ref('');
 const generatedBin = ref<Uint8Array | null>(null);
+const warnings = ref<string[]>([]);
 const parsedFiles = ref<Array<{ path: string; size: number; content: Uint8Array }>>([]);
 
 const sizeOptions = [
@@ -47,29 +57,18 @@ async function onFilesSelected(event: Event) {
   }
 }
 
-function collectFileNames(dir: VirtualDirectory, prefix = ''): string[] {
-  const names: string[] = [];
-  for (const child of dir.children) {
-    const path = prefix ? `${prefix}/${child.name}` : child.name;
-    if (child.kind === 'file') {
-      names.push(path);
-    } else {
-      names.push(...collectFileNames(child, path));
-    }
-  }
-  return names;
-}
-
 function generateImage() {
   if (!uploadedDir.value) return;
   error.value = '';
   generatedBin.value = null;
+  warnings.value = [];
   try {
     const opts: Parameters<typeof FatFS.generate>[0] = {
       size: partitionSize.value,
       source: uploadedDir.value,
       sectorSize: wearLeveling.value ? FatFS.WL_SECTOR_SIZE : sectorSize.value,
       longFilenames: longFilenames.value,
+      espIdfCompat: espIdfCompat.value,
     };
     if (fatType.value !== 0) {
       opts.explicitFatType = fatType.value;
@@ -85,7 +84,7 @@ function generateImage() {
 
 function downloadImage() {
   if (!generatedBin.value) return;
-  download(generatedBin.value, 'fatfs.img');
+  downloadBinary(generatedBin.value, 'fatfs.img');
 }
 
 function onUploadImage(event: Event) {
@@ -94,14 +93,14 @@ function onUploadImage(event: Event) {
   if (!file) return;
   error.value = '';
   parsedFiles.value = [];
+  warnings.value = [];
 
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const bin = new Uint8Array(reader.result as ArrayBuffer);
-      const result = FatFS.parse(bin, {
-        wearLeveling: wearLeveling.value ? wlMode.value : false,
-      });
+      const result = FatFS.parse(bin);
+      warnings.value = formatWarnings(result.warnings);
       parsedFiles.value = FatFS.flatten(result.root).map((f) => ({
         path: f.path,
         size: f.content.byteLength,
@@ -115,28 +114,8 @@ function onUploadImage(event: Event) {
   input.value = '';
 }
 
-function download(data: Uint8Array, filename: string) {
-  const blob = new Blob([data], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function downloadParsedFile(file: { path: string; content: Uint8Array }) {
-  download(file.content, toDownloadName(file.path));
-}
-
-function toDownloadName(path: string): string {
-  return path.replace(/[\\/]/g, '__') || 'file.bin';
-}
-
-function formatSize(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
+  downloadBinary(file.content, toDownloadName(file.path));
 }
 </script>
 
@@ -202,6 +181,10 @@ function formatSize(n: number): string {
             {{ t('fatfs.longFilenames') }}
           </label>
           <label class="checkbox-label">
+            <input type="checkbox" v-model="espIdfCompat" />
+            {{ t('fatfs.espIdfCompat') }}
+          </label>
+          <label class="checkbox-label">
             <input type="checkbox" v-model="wearLeveling" />
             {{ t('fatfs.wearLeveling') }}
           </label>
@@ -220,7 +203,7 @@ function formatSize(n: number): string {
           </button>
           <button v-if="generatedBin" class="btn success" @click="downloadImage">
             {{ t('fatfs.downloadImage') }}
-            ({{ formatSize(generatedBin.byteLength) }})
+            ({{ formatBytes(generatedBin.byteLength) }})
           </button>
         </div>
       </div>
@@ -230,25 +213,13 @@ function formatSize(n: number): string {
       <div class="panel">
         <h3>{{ t('fatfs.uploadImage') }}</h3>
 
-        <div class="options-row" style="margin-bottom: 0.75rem">
-          <label class="checkbox-label">
-            <input type="checkbox" v-model="wearLeveling" />
-            {{ t('fatfs.wearLeveling') }}
-          </label>
-          <label v-if="wearLeveling">
-            {{ t('fatfs.wlMode') }}:
-            <select v-model="wlMode" class="input-small">
-              <option value="perf">perf</option>
-              <option value="safe">safe</option>
-            </select>
-          </label>
-        </div>
-
         <label class="file-upload">
           <input type="file" accept=".bin,.img" @change="onUploadImage" />
           <span class="btn outline">{{ t('fatfs.uploadImage') }}</span>
         </label>
       </div>
+
+      <WarningsPanel :title="t('fatfs.parsedWarnings')" :warnings="warnings" />
 
       <div v-if="parsedFiles.length" class="result-section">
         <h3>{{ t('fatfs.parsedFiles') }}</h3>
@@ -266,7 +237,7 @@ function formatSize(n: number): string {
                 <td>
                   <code>{{ file.path }}</code>
                 </td>
-                <td>{{ formatSize(file.size) }}</td>
+                <td>{{ formatBytes(file.size) }}</td>
                 <td>
                   <button class="btn outline" @click="downloadParsedFile(file)">
                     {{ t('common.download') }}

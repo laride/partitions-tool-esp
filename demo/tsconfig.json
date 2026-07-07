@@ -12,12 +12,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
-    "paths": {
-      "partitions-tool-esp": ["../src/index.ts"],
-      "partitions-tool-esp/*": ["../src/*/index.ts"],
-      "partitions-tool-esp/io/*": ["../src/io/*.ts"]
-    }
+    "jsx": "preserve"
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "env.d.ts"]
 }
